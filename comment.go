@@ -106,11 +106,11 @@ func extractSingleLineComments(filePath string, lines []string, pattern *regexp.
 		matches := pattern.FindStringSubmatch(line)
 		if len(matches) >= 2 {
 			commentContent := strings.TrimSpace(matches[1])
-			
+
 			// Check if AI marker is at start or end of comment content
 			// Keep the full content including markers, just determine action type
 			var actionType string
-			
+
 			if strings.HasPrefix(commentContent, "AI?") || strings.HasPrefix(commentContent, "AI!") {
 				// Starts with AI marker
 				if strings.HasPrefix(commentContent, "AI?") {
@@ -164,7 +164,7 @@ func extractMultilineComments(filePath string, lines []string, pair MultilineCom
 			inComment = true
 			startLine = i
 			commentLines = []string{line}
-			
+
 			// Check if end pattern is also on the same line (single-line multiline comment)
 			if pair.End.MatchString(line) {
 				// Process the comment immediately
@@ -213,7 +213,7 @@ func extractMultilineComments(filePath string, lines []string, pair MultilineCom
 						actionType = "!"
 					}
 
-					// Extract content by removing comment markers
+					// Extract content by removing comment markers. AI?
 					content := extractMultilineContent(fullComment)
 
 					comment := AIComment{

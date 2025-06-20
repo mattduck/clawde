@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/creack/pty"
 	"github.com/fsnotify/fsnotify"
@@ -41,8 +42,29 @@ func NewCLIWrapper(command string, args ...string) (*CLIWrapper, error) {
 }
 
 func (w *CLIWrapper) SendCommand(command string) error {
-	_, err := w.stdin.Write([]byte(command + "\n"))
+	// Send the command text first
+	_, err := w.stdin.Write([]byte(command))
+	if err != nil {
+		return err
+	}
+
+	// Add a pause before sending Enter key to submit.
+	// it seems that Claude requires both the pause and sending the byte like this (rather than \n),
+	// otherwise it just inserts the newline -- probably part of how it implements paste handling?
+	time.Sleep(100 * time.Millisecond)
+	_, err = w.stdin.Write([]byte{13}) // ASCII 13 = Enter key
 	return err
+}
+
+// renderCommentPrompt creates a prompt for AI question comments
+func renderCommentPrompt(comment AIComment) string {
+	if comment.ActionType == "!" {
+		return fmt.Sprintf("See %s at line %d. Summarise the ask, and make the appropriate changes",
+			comment.FilePath, comment.LineNumber)
+	} else {
+		return fmt.Sprintf("See %s at line %d. Summarise the question and answer it. DO NOT MAKE CHANGES.",
+			comment.FilePath, comment.LineNumber)
+	}
 }
 
 func (w *CLIWrapper) Close() error {
@@ -64,13 +86,13 @@ func (w *CLIWrapper) CopyOutput() {
 
 func setupFileWatcher(watchDir string, wrapper *CLIWrapper) error {
 	log.Printf("Starting file watcher setup for directory: %s", watchDir)
-	
+
 	// Check if the watch directory exists
 	if _, err := os.Stat(watchDir); os.IsNotExist(err) {
 		log.Printf("ERROR: Watch directory does not exist: %s", watchDir)
 		return fmt.Errorf("watch directory does not exist: %s", watchDir)
 	}
-	
+
 	watcher, err := fsnotify.NewWatcher()
 	if err != nil {
 		log.Printf("ERROR: Failed to create file watcher: %v", err)
@@ -115,12 +137,12 @@ func setupFileWatcher(watchDir string, wrapper *CLIWrapper) error {
 				if event.Op&fsnotify.Write == fsnotify.Write || event.Op&fsnotify.Create == fsnotify.Create {
 					ext := filepath.Ext(event.Name)
 					log.Printf("File extension detected: %s for file %s", ext, event.Name)
-					
+
 					// Skip temporary files (ending with ~, .tmp, .swp, etc.)
-					if strings.HasSuffix(event.Name, "~") || 
-					   strings.HasSuffix(event.Name, ".tmp") || 
-					   strings.HasSuffix(event.Name, ".swp") ||
-					   strings.Contains(event.Name, ".#") {
+					if strings.HasSuffix(event.Name, "~") ||
+						strings.HasSuffix(event.Name, ".tmp") ||
+						strings.HasSuffix(event.Name, ".swp") ||
+						strings.Contains(event.Name, ".#") {
 						log.Printf("Ignoring temporary file: %s", event.Name)
 					} else if ext == ".py" || ext == ".js" || ext == ".go" {
 						log.Printf("File change detected for monitored extension: %s", event.Name)
@@ -144,6 +166,31 @@ func setupFileWatcher(watchDir string, wrapper *CLIWrapper) error {
 									log.Printf("    %s", contextLine)
 								}
 								log.Printf("  ---")
+
+								// Process AI comments (both "?" and "!" action types)
+								if comment.ActionType == "?" || comment.ActionType == "!" {
+									// Check if we've already processed this comment
+									if !isCommentProcessed(comment) {
+										log.Printf("Processing new AI comment (%s): %s", comment.ActionType, comment.Hash)
+
+										// Render the prompt template
+										prompt := renderCommentPrompt(comment)
+										log.Printf("Sending prompt to underlying program: %s", prompt)
+
+										// Send the prompt to the wrapped program
+										if err := wrapper.SendCommand(prompt); err != nil {
+											log.Printf("ERROR: Failed to send prompt to wrapped program: %v", err)
+										} else {
+											// Mark this comment as processed to avoid reprocessing
+											markCommentProcessed(comment)
+											log.Printf("Successfully sent prompt and marked comment as processed")
+										}
+									} else {
+										log.Printf("Skipping already processed AI comment: %s", comment.Hash)
+									}
+								} else {
+									log.Printf("Skipping AI comment with unsupported action type: %s", comment.ActionType)
+								}
 							}
 							log.Printf("=== END AI COMMENTS ===")
 						} else {
@@ -175,7 +222,7 @@ func setupFileWatcher(watchDir string, wrapper *CLIWrapper) error {
 	}
 
 	log.Printf("Directory successfully added to watcher: %s", watchDir)
-	
+
 	// List files in the directory for debugging
 	files, err := filepath.Glob(filepath.Join(watchDir, "*"))
 	if err != nil {
