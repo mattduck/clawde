@@ -626,6 +626,16 @@ func processUserInput(input []byte, n int, wrapper *CLIWrapper) []byte {
 			// Don't add this to processedInput (consume the key)
 			continue
 		}
+		// Check for Ctrl+N (ASCII 14) - map to down arrow
+		if input[i] == 14 {
+			processedInput = append(processedInput, '\x1b', '[', 'B')
+			continue
+		}
+		// Check for Ctrl+P (ASCII 16) - map to up arrow
+		if input[i] == 16 {
+			processedInput = append(processedInput, '\x1b', '[', 'A')
+			continue
+		}
 		// Check for Ctrl+J (ASCII 10) - reliable way to send actual Enter
 		if input[i] == 10 {
 			// Ctrl+J: send actual enter
