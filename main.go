@@ -231,6 +231,28 @@ func (w *CLIWrapper) setupResizeHandler() {
 	}()
 }
 
+// addDirectoriesRecursively walks the directory tree and adds all directories to the watcher
+func addDirectoriesRecursively(watcher *fsnotify.Watcher, rootDir string) error {
+	return filepath.Walk(rootDir, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			log.Printf("WARNING: Error accessing path %s: %v", path, err)
+			return nil // Continue walking even if one directory fails
+		}
+
+		// Only add directories to the watcher
+		if info.IsDir() {
+			log.Printf("Adding directory to watcher: %s", path)
+			if err := watcher.Add(path); err != nil {
+				log.Printf("WARNING: Failed to add directory %s to watcher: %v", path, err)
+				return nil // Continue walking even if one directory fails
+			}
+			log.Printf("Successfully added directory to watcher: %s", path)
+		}
+
+		return nil
+	})
+}
+
 func setupFileWatcher(watchDir string, wrapper *CLIWrapper) error {
 	log.Printf("Starting file watcher setup for directory: %s", watchDir)
 
@@ -277,6 +299,18 @@ func setupFileWatcher(watchDir string, wrapper *CLIWrapper) error {
 				}
 				if event.Op&fsnotify.Chmod == fsnotify.Chmod {
 					log.Printf("CHMOD event: %s", event.Name)
+				}
+
+				// Handle directory creation events - add new directories to watcher
+				if event.Op&fsnotify.Create == fsnotify.Create {
+					if info, err := os.Stat(event.Name); err == nil && info.IsDir() {
+						log.Printf("New directory created: %s", event.Name)
+						if err := addDirectoriesRecursively(watcher, event.Name); err != nil {
+							log.Printf("WARNING: Failed to add new directory %s to watcher: %v", event.Name, err)
+						} else {
+							log.Printf("Successfully added new directory %s and subdirectories to watcher", event.Name)
+						}
+					}
 				}
 
 				// React to write and create events on specific file types
@@ -360,15 +394,12 @@ func setupFileWatcher(watchDir string, wrapper *CLIWrapper) error {
 		}
 	}()
 
-	// Add the directory to the watcher
-	log.Printf("Adding directory to watcher: %s", watchDir)
-	err = watcher.Add(watchDir)
+	// Add the directory and all subdirectories to the watcher recursively
+	err = addDirectoriesRecursively(watcher, watchDir)
 	if err != nil {
-		log.Printf("ERROR: Failed to add directory to watcher: %v", err)
-		return fmt.Errorf("failed to add directory to watcher: %w", err)
+		log.Printf("ERROR: Failed to add directories to watcher: %v", err)
+		return fmt.Errorf("failed to add directories to watcher: %w", err)
 	}
-
-	log.Printf("Directory successfully added to watcher: %s", watchDir)
 
 	// List files in the directory for debugging
 	files, err := filepath.Glob(filepath.Join(watchDir, "*"))
