@@ -7,14 +7,12 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
-	"path/filepath"
 	"strings"
 	"sync"
 	"syscall"
 	"time"
 
 	"github.com/creack/pty"
-	"github.com/fsnotify/fsnotify"
 	"golang.org/x/term"
 )
 
@@ -234,193 +232,87 @@ func (w *CLIWrapper) setupResizeHandler() {
 	}()
 }
 
-// addDirectoriesRecursively walks the directory tree and adds all directories to the watcher
-func addDirectoriesRecursively(watcher *fsnotify.Watcher, rootDir string) error {
-	return filepath.Walk(rootDir, func(path string, info os.FileInfo, err error) error {
-		if err != nil {
-			log.Printf("WARNING: Error accessing path %s: %v", path, err)
-			return nil // Continue walking even if one directory fails
-		}
 
-		// Only add directories to the watcher
-		if info.IsDir() {
-			log.Printf("Adding directory to watcher: %s", path)
-			if err := watcher.Add(path); err != nil {
-				log.Printf("WARNING: Failed to add directory %s to watcher: %v", path, err)
-				return nil // Continue walking even if one directory fails
+// handleFileChange processes file changes and extracts AI comments
+func handleFileChange(filePath string, wrapper *CLIWrapper) {
+	log.Printf("Processing file change: %s", filePath)
+
+	// Extract AI comments from the changed file
+	comments, err := ExtractAIComments(filePath)
+	if err != nil {
+		log.Printf("ERROR: Failed to extract AI comments from %s: %v", filePath, err)
+		return
+	}
+
+	if len(comments) == 0 {
+		log.Printf("No AI comments found in %s", filePath)
+		return
+	}
+
+	log.Printf("=== AI COMMENTS FOUND IN %s ===", filePath)
+	for i, comment := range comments {
+		log.Printf("Comment #%d:", i+1)
+		log.Printf("  FilePath: %s", comment.FilePath)
+		log.Printf("  LineNumber: %d", comment.LineNumber)
+		log.Printf("  Content: %s", comment.Content)
+		log.Printf("  ActionType: %s", comment.ActionType)
+		log.Printf("  Hash: %s", comment.Hash)
+		log.Printf("  FullLine: %s", comment.FullLine)
+		log.Printf("  Context (%d lines):", len(comment.ContextLines))
+		for _, contextLine := range comment.ContextLines {
+			log.Printf("    %s", contextLine)
+		}
+		log.Printf("  ---")
+
+		// Process AI comments (both "?" and "!" action types)
+		if comment.ActionType == "?" || comment.ActionType == "!" {
+			// Check if we've already processed this comment
+			if !isCommentProcessed(comment) {
+				log.Printf("Processing new AI comment (%s): %s", comment.ActionType, comment.Hash)
+
+				// Render the prompt template
+				prompt := renderCommentPrompt(comment)
+				log.Printf("Sending prompt to underlying program: %s", prompt)
+
+				// Send the prompt to the wrapped program
+				if err := wrapper.SendCommand(prompt); err != nil {
+					log.Printf("ERROR: Failed to send prompt to wrapped program: %v", err)
+				} else {
+					// Mark this comment as processed to avoid reprocessing
+					markCommentProcessed(comment)
+					log.Printf("Successfully sent prompt and marked comment as processed")
+				}
+			} else {
+				log.Printf("Skipping already processed AI comment: %s", comment.Hash)
 			}
-			log.Printf("Successfully added directory to watcher: %s", path)
+		} else {
+			log.Printf("Skipping AI comment with unsupported action type: %s", comment.ActionType)
 		}
-
-		return nil
-	})
+	}
+	log.Printf("=== END AI COMMENTS ===")
 }
 
-func setupFileWatcher(watchDir string, wrapper *CLIWrapper) error {
+func setupFileWatcher(watchDir string, wrapper *CLIWrapper) (*FileWatcher, error) {
 	log.Printf("Starting file watcher setup for directory: %s", watchDir)
 
-	// Check if the watch directory exists
-	if _, err := os.Stat(watchDir); os.IsNotExist(err) {
-		log.Printf("ERROR: Watch directory does not exist: %s", watchDir)
-		return fmt.Errorf("watch directory does not exist: %s", watchDir)
+	// Create callback function that captures wrapper
+	onFileChange := func(filePath string) {
+		handleFileChange(filePath, wrapper)
 	}
 
-	watcher, err := fsnotify.NewWatcher()
+	// Create and start the file watcher
+	fileWatcher, err := NewFileWatcher(watchDir, onFileChange)
 	if err != nil {
-		log.Printf("ERROR: Failed to create file watcher: %v", err)
-		return fmt.Errorf("failed to create file watcher: %w", err)
+		return nil, err
 	}
 
-	log.Printf("File watcher created successfully")
-
-	go func() {
-		defer watcher.Close()
-		log.Printf("File watcher goroutine started, listening for events...")
-
-		for {
-			select {
-			case event, ok := <-watcher.Events:
-				if !ok {
-					log.Printf("File watcher events channel closed")
-					return
-				}
-
-				log.Printf("Raw file event received: %s | Op: %s", event.Name, event.Op.String())
-
-				// Log all event types for debugging
-				if event.Op&fsnotify.Create == fsnotify.Create {
-					log.Printf("CREATE event: %s", event.Name)
-				}
-				if event.Op&fsnotify.Write == fsnotify.Write {
-					log.Printf("WRITE event: %s", event.Name)
-				}
-				if event.Op&fsnotify.Remove == fsnotify.Remove {
-					log.Printf("REMOVE event: %s", event.Name)
-				}
-				if event.Op&fsnotify.Rename == fsnotify.Rename {
-					log.Printf("RENAME event: %s", event.Name)
-				}
-				if event.Op&fsnotify.Chmod == fsnotify.Chmod {
-					log.Printf("CHMOD event: %s", event.Name)
-				}
-
-				// Handle directory creation events - add new directories to watcher
-				if event.Op&fsnotify.Create == fsnotify.Create {
-					if info, err := os.Stat(event.Name); err == nil && info.IsDir() {
-						log.Printf("New directory created: %s", event.Name)
-						if err := addDirectoriesRecursively(watcher, event.Name); err != nil {
-							log.Printf("WARNING: Failed to add new directory %s to watcher: %v", event.Name, err)
-						} else {
-							log.Printf("Successfully added new directory %s and subdirectories to watcher", event.Name)
-						}
-					}
-				}
-
-				// React to write and create events on specific file types
-				// Many editors use atomic replacement (create temp file, rename) instead of direct writes
-				if event.Op&fsnotify.Write == fsnotify.Write || event.Op&fsnotify.Create == fsnotify.Create {
-					ext := filepath.Ext(event.Name)
-					log.Printf("File extension detected: %s for file %s", ext, event.Name)
-
-					// Skip temporary files (ending with ~, .tmp, .swp, etc.)
-					if strings.HasSuffix(event.Name, "~") ||
-						strings.HasSuffix(event.Name, ".tmp") ||
-						strings.HasSuffix(event.Name, ".swp") ||
-						strings.Contains(event.Name, ".#") {
-						log.Printf("Ignoring temporary file: %s", event.Name)
-					} else if ext == ".py" || ext == ".js" || ext == ".go" {
-						log.Printf("File change detected for monitored extension: %s", event.Name)
-
-						// Extract AI comments from the changed file
-						comments, err := ExtractAIComments(event.Name)
-						if err != nil {
-							log.Printf("ERROR: Failed to extract AI comments from %s: %v", event.Name, err)
-						} else if len(comments) > 0 {
-							log.Printf("=== AI COMMENTS FOUND IN %s ===", event.Name)
-							for i, comment := range comments {
-								log.Printf("Comment #%d:", i+1)
-								log.Printf("  FilePath: %s", comment.FilePath)
-								log.Printf("  LineNumber: %d", comment.LineNumber)
-								log.Printf("  Content: %s", comment.Content)
-								log.Printf("  ActionType: %s", comment.ActionType)
-								log.Printf("  Hash: %s", comment.Hash)
-								log.Printf("  FullLine: %s", comment.FullLine)
-								log.Printf("  Context (%d lines):", len(comment.ContextLines))
-								for _, contextLine := range comment.ContextLines {
-									log.Printf("    %s", contextLine)
-								}
-								log.Printf("  ---")
-
-								// Process AI comments (both "?" and "!" action types)
-								if comment.ActionType == "?" || comment.ActionType == "!" {
-									// Check if we've already processed this comment
-									if !isCommentProcessed(comment) {
-										log.Printf("Processing new AI comment (%s): %s", comment.ActionType, comment.Hash)
-
-										// Render the prompt template
-										prompt := renderCommentPrompt(comment)
-										log.Printf("Sending prompt to underlying program: %s", prompt)
-
-										// Send the prompt to the wrapped program
-										if err := wrapper.SendCommand(prompt); err != nil {
-											log.Printf("ERROR: Failed to send prompt to wrapped program: %v", err)
-										} else {
-											// Mark this comment as processed to avoid reprocessing
-											markCommentProcessed(comment)
-											log.Printf("Successfully sent prompt and marked comment as processed")
-										}
-									} else {
-										log.Printf("Skipping already processed AI comment: %s", comment.Hash)
-									}
-								} else {
-									log.Printf("Skipping AI comment with unsupported action type: %s", comment.ActionType)
-								}
-							}
-							log.Printf("=== END AI COMMENTS ===")
-						} else {
-							log.Printf("No AI comments found in %s", event.Name)
-						}
-					} else {
-						log.Printf("Ignoring file change for unmonitored extension: %s (file: %s)", ext, event.Name)
-					}
-				} else {
-					log.Printf("Ignoring event type %s for file %s", event.Op.String(), event.Name)
-				}
-
-			case err, ok := <-watcher.Errors:
-				log.Printf("File watcher error: %v", err)
-				if !ok {
-					log.Printf("File watcher errors channel closed")
-					return
-				}
-			}
-		}
-	}()
-
-	// Add the directory and all subdirectories to the watcher recursively
-	err = addDirectoriesRecursively(watcher, watchDir)
+	err = fileWatcher.Start()
 	if err != nil {
-		log.Printf("ERROR: Failed to add directories to watcher: %v", err)
-		return fmt.Errorf("failed to add directories to watcher: %w", err)
+		fileWatcher.Close()
+		return nil, err
 	}
 
-	// List files in the directory for debugging
-	files, err := filepath.Glob(filepath.Join(watchDir, "*"))
-	if err != nil {
-		log.Printf("WARNING: Could not list files in watch directory: %v", err)
-	} else {
-		log.Printf("Files in watch directory (%d total):", len(files))
-		for _, file := range files {
-			info, err := os.Stat(file)
-			if err != nil {
-				log.Printf("  - %s (stat error: %v)", file, err)
-			} else {
-				log.Printf("  - %s (size: %d, mode: %s)", file, info.Size(), info.Mode())
-			}
-		}
-	}
-
-	return nil
+	return fileWatcher, nil
 }
 
 // KeyRepeatDetector tracks key press patterns to detect held keys
@@ -697,10 +589,12 @@ func main() {
 		watchDir = strings.TrimPrefix(os.Args[len(os.Args)-1], "--watch=")
 	}
 
-	if err := setupFileWatcher(watchDir, wrapper); err != nil {
+	fileWatcher, err := setupFileWatcher(watchDir, wrapper)
+	if err != nil {
 		log.Printf("Failed to setup file watcher: %v", err)
 		exitWithRestore(1)
 	}
+	defer fileWatcher.Close()
 
 	// Handle user input
 	handleUserInput(wrapper)
