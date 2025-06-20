@@ -123,6 +123,7 @@ func (w *CLIWrapper) SendCommand(command string) error {
 	return err
 }
 
+// AI: this one
 // renderCommentPrompt creates a prompt for AI question comments
 func renderCommentPrompt(comment AIComment) string {
 	var locationStr string
@@ -136,15 +137,16 @@ func renderCommentPrompt(comment AIComment) string {
 
 	switch comment.ActionType {
 	case "!":
-		return fmt.Sprintf("See %s %s and surrounding context. Summarise the ask, and make the appropriate changes",
+		return fmt.Sprintf("See %s %s and surrounding context. Make the appropriate changes. Replace the AI! marker with [ai] when done.",
 			comment.FilePath, locationStr)
 	case "?":
-		return fmt.Sprintf("See %s %s and surrounding context. Summarise the question and answer it. DO NOT MAKE CHANGES.",
+		return fmt.Sprintf("See %s %s and surrounding context. Answer the question(s). DO NOT MAKE CHANGES. Replace the AI? marker with [ai] when done.",
 			comment.FilePath, locationStr)
 	case ":":
-		return fmt.Sprintf("Context from code comment at %s %s (no action required)",
+		return fmt.Sprintf("Extra from code comment at %s %s",
 			comment.FilePath, locationStr)
 	default:
+		// TODO: should never happen, log?
 		return fmt.Sprintf("See %s %s and surrounding context.",
 			comment.FilePath, locationStr)
 	}
@@ -164,9 +166,9 @@ func renderMultipleCommentsPrompt(comments []AIComment) string {
 
 	var prompt strings.Builder
 	if hasAction {
-		prompt.WriteString("I have multiple requests that require changes. Please review the following files and locations, summarise the asks, and make the appropriate changes:\n\n")
+		prompt.WriteString("Read the following locations and surrounding context, and make the appropriate changes mentioned in the comments. Replace the AI! markers with [ai] when done:\n\n")
 	} else {
-		prompt.WriteString("I have multiple questions. Please review the following files and locations, summarise the questions, and answer them. DO NOT MAKE CHANGES.\n\n")
+		prompt.WriteString("Read the following locations and surrounding context, and answer the question(s) in the comments. DO NOT MAKE CHANGES. Replace the AI? markers with [ai] when done:\n\n")
 	}
 
 	// Add bullet points for each comment

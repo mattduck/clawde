@@ -197,14 +197,14 @@ func extractSingleLineComments(filePath string, lines []string, pattern *regexp.
 			// AI: is only supported at the start, not at the end
 			var actionType string
 			lowerContent := strings.ToLower(combinedContent)
-			
+
 			// Check for AI! first (highest priority) - can be at start or end
 			if strings.HasSuffix(lowerContent, " ai!") || lowerContent == "ai!" || strings.HasPrefix(lowerContent, "ai!") {
 				actionType = "!"
 			} else if strings.HasSuffix(lowerContent, " ai?") || lowerContent == "ai?" || strings.HasPrefix(lowerContent, "ai?") {
 				actionType = "?"
 			} else if strings.HasPrefix(lowerContent, "ai:") {
-				// AI: only supported at start
+				// AI only supported at start
 				actionType = ":"
 			} else {
 				// AI marker is in the middle or not present - skip this comment
@@ -245,17 +245,17 @@ func extractSingleLineComments(filePath string, lines []string, pattern *regexp.
 
 				// Check if it contains AI markers
 				// Priority: AI! and AI? take precedence over AI:
-				// AI: is only supported at the start, not at the end
+				// AI is only supported at the start, not at the end
 				var actionType string
 				lowerContent := strings.ToLower(commentContent)
-				
+
 				// Check for AI! first (highest priority) - can be at start or end
 				if strings.HasSuffix(lowerContent, " ai!") || lowerContent == "ai!" || strings.HasPrefix(lowerContent, "ai!") {
 					actionType = "!"
 				} else if strings.HasSuffix(lowerContent, " ai?") || lowerContent == "ai?" || strings.HasPrefix(lowerContent, "ai?") {
 					actionType = "?"
 				} else if strings.HasPrefix(lowerContent, "ai:") {
-					// AI: only supported at start
+					// AI only supported at start
 					actionType = ":"
 				} else {
 					// AI marker is in the middle or not present - skip this comment
@@ -418,11 +418,11 @@ func extractContextLines(lines []string, targetLine, contextSize int) []string {
 func extractMultilineContent(fullComment string) string {
 	// Remove various multiline comment markers
 	content := fullComment
-	
+
 	// Remove C-style /* */ markers
 	content = strings.ReplaceAll(content, "/*", "")
 	content = strings.ReplaceAll(content, "*/", "")
-	
+
 	// Remove Python triple quote markers
 	content = strings.ReplaceAll(content, `"""`, "")
 	content = strings.ReplaceAll(content, `'''`, "")
