@@ -15,6 +15,7 @@ import (
 type AIComment struct {
 	FilePath     string   // Path to the file containing the comment
 	LineNumber   int      // Line number where the comment appears (1-indexed)
+	EndLine      int      // End line number for multiline comments (0 for single-line)
 	Content      string   // The comment content (stripped of comment markers)
 	FullLine     string   // The complete line containing the comment
 	ContextLines []string // Surrounding lines for context
@@ -133,6 +134,7 @@ func extractSingleLineComments(filePath string, lines []string, pattern *regexp.
 			comment := AIComment{
 				FilePath:   filePath,
 				LineNumber: i + 1, // 1-indexed
+				EndLine:    0,      // 0 indicates single-line comment
 				Content:    commentContent,
 				FullLine:   line,
 				ActionType: actionType,
@@ -181,6 +183,7 @@ func extractMultilineComments(filePath string, lines []string, pair MultilineCom
 					comment := AIComment{
 						FilePath:   filePath,
 						LineNumber: startLine + 1, // 1-indexed
+						EndLine:    i + 1,         // End line (1-indexed) - same as start for single-line multiline
 						Content:    content,
 						FullLine:   fullComment,
 						ActionType: actionType,
@@ -219,6 +222,7 @@ func extractMultilineComments(filePath string, lines []string, pair MultilineCom
 					comment := AIComment{
 						FilePath:   filePath,
 						LineNumber: startLine + 1, // 1-indexed
+						EndLine:    i + 1,         // End line (1-indexed)
 						Content:    content,
 						FullLine:   fullComment,
 						ActionType: actionType,

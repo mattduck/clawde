@@ -412,3 +412,87 @@ func TestEdgeCases(t *testing.T) {
 		})
 	}
 }
+
+func TestRenderCommentPrompt(t *testing.T) {
+	tests := []struct {
+		name     string
+		comment  AIComment
+		expected string
+	}{
+		{
+			name: "single line question",
+			comment: AIComment{
+				FilePath:   "test.go",
+				LineNumber: 5,
+				ActionType: "?",
+			},
+			expected: "See test.go at line 5. Summarise the question and answer it. DO NOT MAKE CHANGES.",
+		},
+		{
+			name: "single line command",
+			comment: AIComment{
+				FilePath:   "test.go",
+				LineNumber: 10,
+				ActionType: "!",
+			},
+			expected: "See test.go at line 10. Summarise the ask, and make the appropriate changes",
+		},
+		{
+			name: "multiline question - should show range",
+			comment: AIComment{
+				FilePath:   "test.go",
+				LineNumber: 15,
+				EndLine:    17, // This field doesn't exist yet
+				ActionType: "?",
+			},
+			expected: "See test.go at lines 15-17. Summarise the question and answer it. DO NOT MAKE CHANGES.",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := renderCommentPrompt(tt.comment)
+			if result != tt.expected {
+				t.Errorf("renderCommentPrompt() = %q, want %q", result, tt.expected)
+			}
+		})
+	}
+}
+
+func TestMultilineCommentLineRanges(t *testing.T) {
+	content := `package main
+
+/*
+ * This is a multiline comment
+ * that spans several lines
+ * and has a question AI?
+ */
+
+func main() {
+	// single line comment
+}`
+
+	comments, err := extractAICommentsFromString(content, "test.go")
+	if err != nil {
+		t.Fatalf("extractAICommentsFromString() error = %v", err)
+	}
+
+	if len(comments) != 1 {
+		t.Fatalf("Expected 1 comment, got %d", len(comments))
+	}
+
+	comment := comments[0]
+	if comment.LineNumber != 3 {
+		t.Errorf("Expected LineNumber = 3, got %d", comment.LineNumber)
+	}
+	if comment.EndLine != 7 {
+		t.Errorf("Expected EndLine = 7, got %d", comment.EndLine)
+	}
+
+	// Test the rendered prompt
+	prompt := renderCommentPrompt(comment)
+	expected := "See test.go at lines 3-7. Summarise the question and answer it. DO NOT MAKE CHANGES."
+	if prompt != expected {
+		t.Errorf("renderCommentPrompt() = %q, want %q", prompt, expected)
+	}
+}
