@@ -125,15 +125,29 @@ func setupFileWatcher(watchDir string, wrapper *CLIWrapper) error {
 					} else if ext == ".py" || ext == ".js" || ext == ".go" {
 						log.Printf("File change detected for monitored extension: %s", event.Name)
 
-						// Send the file path as a safe string to the underlying program
-						// Use %q to safely quote the path and escape any special characters
-						command := fmt.Sprintf("%q", event.Name)
-
-						log.Printf("Sending command to wrapped program: %s", command)
-						if err := wrapper.SendCommand(command); err != nil {
-							log.Printf("ERROR: Failed to send command to wrapped program: %v", err)
+						// Extract AI comments from the changed file
+						comments, err := ExtractAIComments(event.Name)
+						if err != nil {
+							log.Printf("ERROR: Failed to extract AI comments from %s: %v", event.Name, err)
+						} else if len(comments) > 0 {
+							log.Printf("=== AI COMMENTS FOUND IN %s ===", event.Name)
+							for i, comment := range comments {
+								log.Printf("Comment #%d:", i+1)
+								log.Printf("  FilePath: %s", comment.FilePath)
+								log.Printf("  LineNumber: %d", comment.LineNumber)
+								log.Printf("  Content: %s", comment.Content)
+								log.Printf("  ActionType: %s", comment.ActionType)
+								log.Printf("  Hash: %s", comment.Hash)
+								log.Printf("  FullLine: %s", comment.FullLine)
+								log.Printf("  Context (%d lines):", len(comment.ContextLines))
+								for _, contextLine := range comment.ContextLines {
+									log.Printf("    %s", contextLine)
+								}
+								log.Printf("  ---")
+							}
+							log.Printf("=== END AI COMMENTS ===")
 						} else {
-							log.Printf("Command sent successfully to wrapped program")
+							log.Printf("No AI comments found in %s", event.Name)
 						}
 					} else {
 						log.Printf("Ignoring file change for unmonitored extension: %s (file: %s)", ext, event.Name)
