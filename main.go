@@ -9,6 +9,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -17,15 +18,54 @@ import (
 	"golang.org/x/term"
 )
 
+// TODO: these were to try to reduce flicker, not sure if it actually
+// helps. might want to ignore.
+
+// Global flag to control output throttling
+var enableOutputThrottling = true
+
+// Global flag to control input tracking for adaptive delays
+var enableInputTracking = true
+
 type CLIWrapper struct {
-	cmd    *exec.Cmd
-	ptmx   *os.File
-	stdin  io.Writer
-	stdout io.Reader
+	cmd          *exec.Cmd
+	ptmx         *os.File
+	stdin        io.Writer
+	stdout       io.Reader
+	outputBuffer *outputBuffer
+}
+
+type outputBuffer struct {
+	data         []byte
+	timer        *time.Timer
+	mutex        sync.Mutex
+	delay        time.Duration
+	fastDelay    time.Duration // When typing (60fps)
+	slowDelay    time.Duration // When idle (15fps)
+	lastInput    time.Time
+	inputTimeout time.Duration // How long to wait before switching to slow mode
 }
 
 func NewCLIWrapper(command string, args ...string) (*CLIWrapper, error) {
 	cmd := exec.Command(command, args...)
+
+	// Set up process group for proper job control
+	// Setsid creates a new session and process group for the wrapped program.
+	//
+	// Why we want this:
+	// - Ensures signals (like Ctrl+C) are delivered to the wrapped program and its children
+	// - Provides proper job control isolation (wrapped program behaves like it would in shell)
+	// - Prevents signals intended for wrapped program from affecting our wrapper
+	//
+	// Why we might not want this:
+	// - PTY already provides some process isolation
+	// - Adds complexity to signal handling
+	// - May interfere with certain programs that expect to share process group with parent
+	//
+	// Overall: Setting this is the "correct" behavior for a shell-like wrapper
+	cmd.SysProcAttr = &syscall.SysProcAttr{
+		Setsid: true,
+	}
 
 	// Start the command with a pty
 	ptmx, err := pty.Start(cmd)
@@ -33,12 +73,32 @@ func NewCLIWrapper(command string, args ...string) (*CLIWrapper, error) {
 		return nil, fmt.Errorf("failed to start command with pty: %w", err)
 	}
 
-	return &CLIWrapper{
+	wrapper := &CLIWrapper{
 		cmd:    cmd,
 		ptmx:   ptmx,
 		stdin:  ptmx,
 		stdout: ptmx,
-	}, nil
+		outputBuffer: &outputBuffer{
+			fastDelay:    16 * time.Millisecond,            // 60fps when typing
+			slowDelay:    33 * time.Millisecond,            // 30fps when idle
+			delay:        33 * time.Millisecond,            // Start in slow mode
+			inputTimeout: 2 * time.Second,                  // Switch to slow after 2s of no input
+			lastInput:    time.Now().Add(-3 * time.Second), // Start as "old" input
+		},
+	}
+
+	// Set initial terminal size
+	if size, err := pty.GetsizeFull(os.Stdout); err == nil {
+		pty.Setsize(ptmx, size)
+	}
+
+	// Handle terminal resize events
+	// NOTE: before we added this I was getting some weird flickering (even more than usual)
+	// when typing when there was already previous messages above (ie. on my second prompt).
+	// this seemed to stop when we added the resize support.
+	wrapper.setupResizeHandler()
+
+	return wrapper, nil
 }
 
 func (w *CLIWrapper) SendCommand(command string) error {
@@ -58,12 +118,21 @@ func (w *CLIWrapper) SendCommand(command string) error {
 
 // renderCommentPrompt creates a prompt for AI question comments
 func renderCommentPrompt(comment AIComment) string {
-	if comment.ActionType == "!" {
-		return fmt.Sprintf("See %s at line %d. Summarise the ask, and make the appropriate changes",
-			comment.FilePath, comment.LineNumber)
+	var locationStr string
+	if comment.EndLine == 0 || comment.EndLine == comment.LineNumber {
+		// Single-line comment
+		locationStr = fmt.Sprintf("at line %d", comment.LineNumber)
 	} else {
-		return fmt.Sprintf("See %s at line %d. Summarise the question and answer it. DO NOT MAKE CHANGES.",
-			comment.FilePath, comment.LineNumber)
+		// Multiline comment
+		locationStr = fmt.Sprintf("at lines %d-%d", comment.LineNumber, comment.EndLine)
+	}
+
+	if comment.ActionType == "!" {
+		return fmt.Sprintf("See %s %s. Summarise the ask, and make the appropriate changes",
+			comment.FilePath, locationStr)
+	} else {
+		return fmt.Sprintf("See %s %s. Summarise the question and answer it. DO NOT MAKE CHANGES.",
+			comment.FilePath, locationStr)
 	}
 }
 
@@ -78,9 +147,87 @@ func (w *CLIWrapper) Close() error {
 }
 
 func (w *CLIWrapper) CopyOutput() {
-	// Copy output from the wrapped program to stdout
+	if enableOutputThrottling {
+		// Start throttled output copying
+		go w.startThrottledOutput()
+	} else {
+		// Simple direct copy
+		go func() {
+			io.Copy(os.Stdout, w.stdout)
+		}()
+	}
+}
+
+func (w *CLIWrapper) startThrottledOutput() {
+	buf := w.outputBuffer
+	buffer := make([]byte, 4096)
+
+	for {
+		n, err := w.stdout.Read(buffer)
+		if err != nil {
+			// Handle any remaining data when reader finishes
+			buf.mutex.Lock()
+			if len(buf.data) > 0 {
+				os.Stdout.Write(buf.data)
+			}
+			buf.mutex.Unlock()
+			return
+		}
+
+		if n > 0 {
+			buf.mutex.Lock()
+			// Add the raw bytes to buffer (preserves \r, ANSI codes, etc.)
+			buf.data = append(buf.data, buffer[:n]...)
+
+			// Update delay based on recent input activity
+			now := time.Now()
+			if now.Sub(buf.lastInput) < buf.inputTimeout {
+				buf.delay = buf.fastDelay // Recent input, use fast refresh
+			} else {
+				buf.delay = buf.slowDelay // No recent input, use slow refresh
+			}
+
+			// Reset timer for debouncing
+			if buf.timer != nil {
+				buf.timer.Stop()
+			}
+
+			buf.timer = time.AfterFunc(buf.delay, func() {
+				buf.mutex.Lock()
+				if len(buf.data) > 0 {
+					os.Stdout.Write(buf.data)
+					buf.data = buf.data[:0] // Reset buffer
+				}
+				buf.mutex.Unlock()
+			})
+			buf.mutex.Unlock()
+		}
+	}
+}
+
+// markUserInput updates the timestamp for user input activity
+func (w *CLIWrapper) markUserInput() {
+	w.outputBuffer.mutex.Lock()
+	w.outputBuffer.lastInput = time.Now()
+	w.outputBuffer.mutex.Unlock()
+}
+
+// setupResizeHandler handles terminal window resize events
+func (w *CLIWrapper) setupResizeHandler() {
+	sigwinch := make(chan os.Signal, 1)
+	signal.Notify(sigwinch, syscall.SIGWINCH)
+
 	go func() {
-		io.Copy(os.Stdout, w.stdout)
+		for range sigwinch {
+			// Get current terminal size
+			if size, err := pty.GetsizeFull(os.Stdout); err == nil {
+				// Forward the new size to the wrapped program's PTY
+				pty.Setsize(w.ptmx, size)
+				log.Printf("Terminal resized to %dx%d", size.Cols, size.Rows)
+			} else {
+				log.Printf("Failed to get terminal size on resize: %v", err)
+			}
+		}
 	}()
 }
 
@@ -243,10 +390,30 @@ func setupFileWatcher(watchDir string, wrapper *CLIWrapper) error {
 }
 
 func handleUserInput(wrapper *CLIWrapper) {
-	go func() {
-		// Copy stdin directly to the PTY to preserve all control characters
-		io.Copy(wrapper.stdin, os.Stdin)
-	}()
+	if enableInputTracking {
+		go func() {
+			// Create a buffer to intercept input and track typing activity
+			buffer := make([]byte, 1024)
+			for {
+				n, err := os.Stdin.Read(buffer)
+				if err != nil {
+					return
+				}
+				if n > 0 {
+					// Mark that user is typing
+					wrapper.markUserInput()
+
+					// Forward the input to the wrapped program
+					wrapper.stdin.Write(buffer[:n])
+				}
+			}
+		}()
+	} else {
+		go func() {
+			// Simple direct copy
+			io.Copy(wrapper.stdin, os.Stdin)
+		}()
+	}
 }
 
 func main() {
@@ -268,7 +435,15 @@ func main() {
 	command := os.Args[1]
 	args := os.Args[2:]
 
-	// Put terminal in raw mode to pass through control characters
+	// Create the CLI wrapper first (program starts in canonical mode like normal shell)
+	wrapper, err := NewCLIWrapper(command, args...)
+	if err != nil {
+		log.Printf("Failed to create CLI wrapper: %v", err)
+		os.Exit(1)
+	}
+	defer wrapper.Close()
+
+	// Now set up raw mode for our input handling
 	var oldState *term.State
 	if term.IsTerminal(int(os.Stdin.Fd())) {
 		var err error
@@ -290,14 +465,6 @@ func main() {
 		os.Exit(code)
 	}
 
-	// Create the CLI wrapper
-	wrapper, err := NewCLIWrapper(command, args...)
-	if err != nil {
-		log.Printf("Failed to create CLI wrapper: %v", err)
-		exitWithRestore(1)
-	}
-	defer wrapper.Close()
-
 	// Start copying output from wrapped program to stdout
 	wrapper.CopyOutput()
 
@@ -315,12 +482,39 @@ func main() {
 	// Handle user input
 	handleUserInput(wrapper)
 
-	// Handle Ctrl+C gracefully
+	// Handle external termination (SIGTERM, SIGHUP) gracefully
+	// Let PTY handle SIGINT (Ctrl+C) naturally to ensure proper forwarding
 	c := make(chan os.Signal, 1)
-	signal.Notify(c, os.Interrupt, syscall.SIGTERM)
+	signal.Notify(c, syscall.SIGTERM, syscall.SIGHUP)
+	
+	// Also monitor parent process death (in case go run is killed)
+	parentPid := os.Getppid()
 	go func() {
-		<-c
-		fmt.Println("\nShutting down...")
+		for {
+			if os.Getppid() != parentPid {
+				log.Printf("Parent process died (was %d, now %d), shutting down", parentPid, os.Getppid())
+				wrapper.Close()
+				exitWithRestore(0)
+				return
+			}
+			time.Sleep(1 * time.Second)
+		}
+	}()
+	
+	go func() {
+		sig := <-c
+		log.Printf("Received %v, forwarding to wrapped process", sig)
+
+		// Forward signal to wrapped process for graceful shutdown
+		if wrapper.cmd.Process != nil {
+			wrapper.cmd.Process.Signal(sig)
+			log.Printf("Forwarded %v to wrapped process (PID: %d)", sig, wrapper.cmd.Process.Pid)
+
+			// Give wrapped process time to clean up gracefully
+			time.Sleep(10 * time.Second)
+			log.Printf("Grace period expired, forcing shutdown")
+		}
+
 		wrapper.Close()
 		exitWithRestore(0)
 	}()
