@@ -27,6 +27,9 @@ var enableOutputThrottling = true
 // Global flag to control input tracking for adaptive delays
 var enableInputTracking = true
 
+// Global flag to control held enter detection
+var enableHeldEnterDetection = false
+
 type CLIWrapper struct {
 	cmd          *exec.Cmd
 	ptmx         *os.File
@@ -420,7 +423,176 @@ func setupFileWatcher(watchDir string, wrapper *CLIWrapper) error {
 	return nil
 }
 
+// KeyRepeatDetector tracks key press patterns to detect held keys
+type KeyRepeatDetector struct {
+	consecutiveCount int
+	lastKeyTime      time.Time
+	isHeld           bool
+	mutex            sync.Mutex
+	threshold        int           // Number of rapid presses to consider "held"
+	maxInterval      time.Duration // Max time between presses to consider consecutive
+	pendingTimer     *time.Timer   // Timer for deferred sending
+	pendingCallback  func()        // Callback to execute when timer expires
+}
+
+// NewKeyRepeatDetector creates a new key repeat detector
+func NewKeyRepeatDetector(threshold int, maxInterval time.Duration) *KeyRepeatDetector {
+	return &KeyRepeatDetector{
+		threshold:   threshold,
+		maxInterval: maxInterval,
+	}
+}
+
+// CheckHeld determines if the key is being held based on timing and repetition
+func (k *KeyRepeatDetector) CheckHeld() bool {
+	k.mutex.Lock()
+	defer k.mutex.Unlock()
+	
+	now := time.Now()
+	
+	// If this is the first press or it's been too long since last press, reset
+	if k.consecutiveCount == 0 || now.Sub(k.lastKeyTime) > k.maxInterval {
+		k.consecutiveCount = 1
+		k.isHeld = false
+	} else {
+		// Rapid successive key presses
+		k.consecutiveCount++
+		
+		// Consider it "held" after threshold rapid presses
+		if k.consecutiveCount >= k.threshold {
+			k.isHeld = true
+		}
+	}
+	
+	k.lastKeyTime = now
+	return k.isHeld
+}
+
+// SetPendingAction sets up a deferred action with a timer
+func (k *KeyRepeatDetector) SetPendingAction(callback func()) {
+	k.mutex.Lock()
+	defer k.mutex.Unlock()
+	
+	// Cancel any existing timer
+	if k.pendingTimer != nil {
+		k.pendingTimer.Stop()
+	}
+	
+	k.pendingCallback = callback
+	k.pendingTimer = time.AfterFunc(k.maxInterval, func() {
+		k.mutex.Lock()
+		defer k.mutex.Unlock()
+		if k.pendingCallback != nil {
+			k.pendingCallback()
+			k.pendingCallback = nil
+		}
+	})
+}
+
+// CancelPending cancels any pending deferred action
+func (k *KeyRepeatDetector) CancelPending() {
+	k.mutex.Lock()
+	defer k.mutex.Unlock()
+	
+	if k.pendingTimer != nil {
+		k.pendingTimer.Stop()
+		k.pendingTimer = nil
+	}
+	k.pendingCallback = nil
+}
+
+// Reset resets the key state when other keys are pressed
+func (k *KeyRepeatDetector) Reset() {
+	k.mutex.Lock()
+	defer k.mutex.Unlock()
+	
+	k.consecutiveCount = 0
+	k.isHeld = false
+	
+	// Cancel any pending action and execute it immediately (flush)
+	if k.pendingTimer != nil {
+		k.pendingTimer.Stop()
+		k.pendingTimer = nil
+	}
+	if k.pendingCallback != nil {
+		callback := k.pendingCallback
+		k.pendingCallback = nil
+		// Execute outside the lock to avoid deadlock
+		go callback()
+	}
+}
+
+// Global detector for Enter key (3 rapid presses within 500ms)
+var enterDetector = NewKeyRepeatDetector(3, 500*time.Millisecond)
+
+// Need a way to send deferred output to the wrapped program
+var deferredOutputChannel = make(chan []byte, 100)
+
+// processEnterKey replaces enter key (ASCII 13) with backslash+enter, unless it's Ctrl+J or held Enter
+func processEnterKey(input []byte, n int, wrapper *CLIWrapper) []byte {
+	processedInput := make([]byte, 0, n*2) // Allow space for potential expansion
+	
+	// Debug: log the entire input sequence
+	log.Printf("DEBUG: Received %d bytes: %v (hex: %x)", n, input[:n], input[:n])
+	
+	for i := 0; i < n; i++ {
+		// Check for Ctrl+J (ASCII 10) - reliable way to send actual Enter
+		if input[i] == 10 {
+			// Ctrl+J: send actual enter
+			log.Printf("DEBUG: Detected Ctrl+J (ASCII 10), sending actual Enter")
+			processedInput = append(processedInput, 13)
+		} else if input[i] == 13 {
+			if enableHeldEnterDetection {
+				// Check if this is a held Enter key
+				shouldSendRawEnter := enterDetector.CheckHeld()
+				
+				if shouldSendRawEnter {
+					// Held Enter: cancel any pending and send actual enter
+					enterDetector.CancelPending()
+					processedInput = append(processedInput, 13)
+				} else if enterDetector.consecutiveCount == 1 {
+					// First Enter in potential sequence: defer sending backslash+enter
+					enterDetector.SetPendingAction(func() {
+						// Send backslash+enter after delay
+						deferredOutput := []byte{'\\', 13}
+						select {
+						case deferredOutputChannel <- deferredOutput:
+						default:
+							// Channel full, send directly (shouldn't happen with large buffer)
+							wrapper.stdin.Write(deferredOutput)
+						}
+					})
+					// Don't add anything to processedInput yet
+				} else {
+					// Subsequent Enter in sequence but not yet held: send actual enter
+					processedInput = append(processedInput, 13)
+				}
+			} else {
+				// Simple mode: always send backslash+enter for regular Enter
+				log.Printf("DEBUG: Regular Enter, sending backslash+enter")
+				processedInput = append(processedInput, '\\')
+				processedInput = append(processedInput, 13)
+			}
+		} else {
+			// All other characters: pass through unchanged
+			processedInput = append(processedInput, input[i])
+			// Reset enter detector on any non-enter input (this flushes pending)
+			if enableHeldEnterDetection {
+				enterDetector.Reset()
+			}
+		}
+	}
+	return processedInput
+}
+
 func handleUserInput(wrapper *CLIWrapper) {
+	// Start goroutine to handle deferred output
+	go func() {
+		for deferredOutput := range deferredOutputChannel {
+			wrapper.stdin.Write(deferredOutput)
+		}
+	}()
+
 	if enableInputTracking {
 		go func() {
 			// Create a buffer to intercept input and track typing activity
@@ -434,15 +606,35 @@ func handleUserInput(wrapper *CLIWrapper) {
 					// Mark that user is typing
 					wrapper.markUserInput()
 
-					// Forward the input to the wrapped program
-					wrapper.stdin.Write(buffer[:n])
+					// Process the input to replace enter with backslash+enter
+					processedInput := processEnterKey(buffer, n, wrapper)
+
+					// Forward the processed input to the wrapped program (if any)
+					if len(processedInput) > 0 {
+						wrapper.stdin.Write(processedInput)
+					}
 				}
 			}
 		}()
 	} else {
 		go func() {
-			// Simple direct copy
-			io.Copy(wrapper.stdin, os.Stdin)
+			// Simple input copy with enter key replacement
+			buffer := make([]byte, 1024)
+			for {
+				n, err := os.Stdin.Read(buffer)
+				if err != nil {
+					return
+				}
+				if n > 0 {
+					// Process the input to replace enter with backslash+enter
+					processedInput := processEnterKey(buffer, n, wrapper)
+
+					// Forward the processed input to the wrapped program (if any)
+					if len(processedInput) > 0 {
+						wrapper.stdin.Write(processedInput)
+					}
+				}
+			}
 		}()
 	}
 }
