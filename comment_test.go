@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -388,9 +389,9 @@ func TestEdgeCases(t *testing.T) {
 			expected: 1,
 		},
 		{
-			name:     "Case sensitivity",
+			name:     "Case insensitivity",
 			content:  "// Comment ai?",
-			expected: 0, // Should be case sensitive
+			expected: 1, // Should match case insensitively
 		},
 		{
 			name:     "AI marker in string literal",
@@ -426,7 +427,7 @@ func TestRenderCommentPrompt(t *testing.T) {
 				LineNumber: 5,
 				ActionType: "?",
 			},
-			expected: "See test.go at line 5. Summarise the question and answer it. DO NOT MAKE CHANGES.",
+			expected: "See test.go at line 5 and surrounding context. Summarise the question and answer it. DO NOT MAKE CHANGES.",
 		},
 		{
 			name: "single line command",
@@ -435,7 +436,7 @@ func TestRenderCommentPrompt(t *testing.T) {
 				LineNumber: 10,
 				ActionType: "!",
 			},
-			expected: "See test.go at line 10. Summarise the ask, and make the appropriate changes",
+			expected: "See test.go at line 10 and surrounding context. Summarise the ask, and make the appropriate changes",
 		},
 		{
 			name: "multiline question - should show range",
@@ -445,7 +446,7 @@ func TestRenderCommentPrompt(t *testing.T) {
 				EndLine:    17, // This field doesn't exist yet
 				ActionType: "?",
 			},
-			expected: "See test.go at lines 15-17. Summarise the question and answer it. DO NOT MAKE CHANGES.",
+			expected: "See test.go at lines 15-17 and surrounding context. Summarise the question and answer it. DO NOT MAKE CHANGES.",
 		},
 	}
 
@@ -491,8 +492,278 @@ func main() {
 
 	// Test the rendered prompt
 	prompt := renderCommentPrompt(comment)
-	expected := "See test.go at lines 3-7. Summarise the question and answer it. DO NOT MAKE CHANGES."
+	expected := "See test.go at lines 3-7 and surrounding context. Summarise the question and answer it. DO NOT MAKE CHANGES."
 	if prompt != expected {
 		t.Errorf("renderCommentPrompt() = %q, want %q", prompt, expected)
+	}
+}
+
+func TestConsecutiveSingleLineComments(t *testing.T) {
+	tests := []struct {
+		name     string
+		content  string
+		expected int
+		wantStartLine int
+		wantEndLine   int
+		wantContent   string
+		wantType      string
+	}{
+		{
+			name: "consecutive whole-line comments with AI?",
+			content: `package main
+
+// This is a long comment
+// that spans multiple lines
+// and should be grouped AI?
+
+func main() {}`,
+			expected: 1,
+			wantStartLine: 3,
+			wantEndLine: 5,
+			wantContent: "This is a long comment that spans multiple lines and should be grouped AI?",
+			wantType: "?",
+		},
+		{
+			name: "consecutive whole-line comments with AI!",
+			content: `package main
+
+// Fix this function
+// it has performance issues
+// please optimize AI!
+
+func main() {}`,
+			expected: 1,
+			wantStartLine: 3,
+			wantEndLine: 5,
+			wantContent: "Fix this function it has performance issues please optimize AI!",
+			wantType: "!",
+		},
+		{
+			name: "mixed inline and whole-line comments - should not group",
+			content: `package main
+
+func test() { // inline comment AI?
+// whole line comment
+// another whole line comment AI!
+}`,
+			expected: 2, // Should find 2 separate comments
+			wantStartLine: 3, // First comment (inline)
+			wantEndLine: 0,   // Inline comment has EndLine = 0
+			wantContent: "inline comment AI?",
+			wantType: "?",
+		},
+		{
+			name: "single whole-line comment - should not have EndLine",
+			content: `package main
+
+// Single comment AI?
+
+func main() {}`,
+			expected: 1,
+			wantStartLine: 3,
+			wantEndLine: 0, // Single line should have EndLine = 0
+			wantContent: "Single comment AI?",
+			wantType: "?",
+		},
+		{
+			name: "consecutive comments with gap - should not group",
+			content: `package main
+
+// First comment AI?
+
+// Second comment after gap AI!
+
+func main() {}`,
+			expected: 2, // Should find 2 separate comments
+			wantStartLine: 3, // First comment
+			wantEndLine: 0,   // Single line
+			wantContent: "First comment AI?",
+			wantType: "?",
+		},
+		{
+			name: "consecutive comments without AI marker - should not match",
+			content: `package main
+
+// This is a comment
+// without any AI markers
+// just regular comments
+
+func main() {}`,
+			expected: 0,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			comments, err := extractAICommentsFromString(tt.content, "test.go")
+			if err != nil {
+				t.Fatalf("extractAICommentsFromString() error = %v", err)
+			}
+
+			if len(comments) != tt.expected {
+				t.Errorf("Expected %d comments, got %d", tt.expected, len(comments))
+				return
+			}
+
+			if tt.expected > 0 {
+				comment := comments[0]
+				if comment.LineNumber != tt.wantStartLine {
+					t.Errorf("Expected LineNumber = %d, got %d", tt.wantStartLine, comment.LineNumber)
+				}
+				if comment.EndLine != tt.wantEndLine {
+					t.Errorf("Expected EndLine = %d, got %d", tt.wantEndLine, comment.EndLine)
+				}
+				if comment.Content != tt.wantContent {
+					t.Errorf("Expected Content = %q, got %q", tt.wantContent, comment.Content)
+				}
+				if comment.ActionType != tt.wantType {
+					t.Errorf("Expected ActionType = %q, got %q", tt.wantType, comment.ActionType)
+				}
+
+				// Test the rendered prompt for multi-line blocks
+				if comment.EndLine > 0 {
+					prompt := renderCommentPrompt(comment)
+					expectedPrompt := fmt.Sprintf("See test.go at lines %d-%d and surrounding context. Summarise the question and answer it. DO NOT MAKE CHANGES.", comment.LineNumber, comment.EndLine)
+					if tt.wantType == "!" {
+						expectedPrompt = fmt.Sprintf("See test.go at lines %d-%d and surrounding context. Summarise the ask, and make the appropriate changes", comment.LineNumber, comment.EndLine)
+					}
+					if prompt != expectedPrompt {
+						t.Errorf("renderCommentPrompt() = %q, want %q", prompt, expectedPrompt)
+					}
+				}
+			}
+		})
+	}
+}
+
+func TestCaseInsensitiveAIMarkers(t *testing.T) {
+	tests := []struct {
+		name     string
+		content  string
+		expected int
+		wantType string
+	}{
+		{
+			name:     "lowercase ai?",
+			content:  "// This is a test comment ai?",
+			expected: 1,
+			wantType: "?",
+		},
+		{
+			name:     "lowercase ai!",
+			content:  "// Fix this function ai!",
+			expected: 1,
+			wantType: "!",
+		},
+		{
+			name:     "mixed case Ai?",
+			content:  "// What should this do Ai?",
+			expected: 1,
+			wantType: "?",
+		},
+		{
+			name:     "mixed case aI!",
+			content:  "// Refactor this aI!",
+			expected: 1,
+			wantType: "!",
+		},
+		{
+			name:     "uppercase AI?",
+			content:  "// This needs clarification AI?",
+			expected: 1,
+			wantType: "?",
+		},
+		{
+			name:     "uppercase AI!",
+			content:  "// Optimize this AI!",
+			expected: 1,
+			wantType: "!",
+		},
+		{
+			name:     "multiline with mixed case",
+			content: `/*
+ * This is a multiline comment
+ * that needs review ai?
+ */`,
+			expected: 1,
+			wantType: "?",
+		},
+		{
+			name: "consecutive comments with different cases",
+			content: `// First comment ai?
+// Second comment AI!
+// Third comment Ai?`,
+			expected: 1, // Should be grouped into one comment
+			wantType: "?", // First marker wins
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			comments, err := extractAICommentsFromString(tt.content, "test.go")
+			if err != nil {
+				t.Fatalf("extractAICommentsFromString() error = %v", err)
+			}
+
+			if len(comments) != tt.expected {
+				t.Errorf("Expected %d comments, got %d", tt.expected, len(comments))
+				return
+			}
+
+			if tt.expected > 0 {
+				comment := comments[0]
+				if comment.ActionType != tt.wantType {
+					t.Errorf("Expected ActionType = %q, got %q", tt.wantType, comment.ActionType)
+				}
+			}
+		})
+	}
+}
+
+func TestInlineVsWholeLineComments(t *testing.T) {
+	content := `package main
+
+func test() {
+    x := 1 // inline comment AI?
+    // whole line comment starts here
+    // and continues here
+    // ending with marker AI!
+    y := 2 // another inline AI?
+}`
+
+	comments, err := extractAICommentsFromString(content, "test.go")
+	if err != nil {
+		t.Fatalf("extractAICommentsFromString() error = %v", err)
+	}
+
+	if len(comments) != 3 {
+		t.Fatalf("Expected 3 comments, got %d", len(comments))
+	}
+
+	// First comment should be inline
+	comment1 := comments[0]
+	if comment1.LineNumber != 4 || comment1.EndLine != 0 {
+		t.Errorf("First comment should be inline at line 4, got line %d with EndLine %d", comment1.LineNumber, comment1.EndLine)
+	}
+	if comment1.ActionType != "?" {
+		t.Errorf("First comment should be type '?', got %q", comment1.ActionType)
+	}
+
+	// Second comment should be a multi-line block
+	comment2 := comments[1]
+	if comment2.LineNumber != 5 || comment2.EndLine != 7 {
+		t.Errorf("Second comment should be multi-line from 5-7, got %d-%d", comment2.LineNumber, comment2.EndLine)
+	}
+	if comment2.ActionType != "!" {
+		t.Errorf("Second comment should be type '!', got %q", comment2.ActionType)
+	}
+
+	// Third comment should be inline
+	comment3 := comments[2]
+	if comment3.LineNumber != 8 || comment3.EndLine != 0 {
+		t.Errorf("Third comment should be inline at line 8, got line %d with EndLine %d", comment3.LineNumber, comment3.EndLine)
+	}
+	if comment3.ActionType != "?" {
+		t.Errorf("Third comment should be type '?', got %q", comment3.ActionType)
 	}
 }

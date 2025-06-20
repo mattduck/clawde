@@ -128,10 +128,10 @@ func renderCommentPrompt(comment AIComment) string {
 	}
 
 	if comment.ActionType == "!" {
-		return fmt.Sprintf("See %s %s. Summarise the ask, and make the appropriate changes",
+		return fmt.Sprintf("See %s %s and surrounding context. Summarise the ask, and make the appropriate changes",
 			comment.FilePath, locationStr)
 	} else {
-		return fmt.Sprintf("See %s %s. Summarise the question and answer it. DO NOT MAKE CHANGES.",
+		return fmt.Sprintf("See %s %s and surrounding context. Summarise the question and answer it. DO NOT MAKE CHANGES.",
 			comment.FilePath, locationStr)
 	}
 }
@@ -486,7 +486,7 @@ func main() {
 	// Let PTY handle SIGINT (Ctrl+C) naturally to ensure proper forwarding
 	c := make(chan os.Signal, 1)
 	signal.Notify(c, syscall.SIGTERM, syscall.SIGHUP)
-	
+
 	// Also monitor parent process death (in case go run is killed)
 	parentPid := os.Getppid()
 	go func() {
@@ -500,7 +500,7 @@ func main() {
 			time.Sleep(1 * time.Second)
 		}
 	}()
-	
+
 	go func() {
 		sig := <-c
 		log.Printf("Received %v, forwarding to wrapped process", sig)
