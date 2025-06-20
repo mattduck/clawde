@@ -60,6 +60,14 @@ func TestGoSingleLineComments(t *testing.T) {
 			wantLine: 3,
 		},
 		{
+			name:     "Go comment with AI:",
+			content:  "package main\n\n// AI: there's the placeholder\nfunc main() {}",
+			expected: 1,
+			wantType: ":",
+			wantContent: "AI: there's the placeholder",
+			wantLine: 3,
+		},
+		{
 			name:     "Go comment without AI marker",
 			content:  "package main\n\n// This is a regular comment\nfunc main() {}",
 			expected: 0,
@@ -139,6 +147,12 @@ func TestJavaScriptSingleLineComments(t *testing.T) {
 			expected: 1,
 			wantType: "!",
 		},
+		{
+			name:     "JS comment with AI:",
+			content:  "// AI: check this logic\nfunction test() {}",
+			expected: 1,
+			wantType: ":",
+		},
 	}
 
 	for _, tt := range tests {
@@ -181,6 +195,12 @@ func TestPythonSingleLineComments(t *testing.T) {
 			content:  "# Refactor this function AI!\ndef test():\n    pass",
 			expected: 1,
 			wantType: "!",
+		},
+		{
+			name:     "Python comment with AI:",
+			content:  "# AI: there's the placeholder\ndef hello_world():\n    print(\"Hello, World!\")",
+			expected: 1,
+			wantType: ":",
 		},
 		{
 			name:     "Python comment without AI marker",
@@ -264,6 +284,17 @@ function test() {}`,
 			expected: 1,
 			wantType: "?",
 			wantContent: "Quick comment AI?",
+		},
+		{
+			name: "Multiline comment with AI:",
+			content: `/*
+ * AI: this function needs review
+ * for performance optimizations
+ */
+function test() {}`,
+			expected: 1,
+			wantType: ":",
+			wantContent: "AI: this function needs review for performance optimizations",
 		},
 	}
 
@@ -460,6 +491,21 @@ func TestEdgeCases(t *testing.T) {
 			name:     "Comment ending with word containing ai!",
 			content:  "// The brave samurai!",
 			expected: 0, // Should not match - "samurai!" is not an AI marker
+		},
+		{
+			name:     "AI: marker at start of comment",
+			content:  "// AI: What should this function do?",
+			expected: 1, // Should match
+		},
+		{
+			name:     "Comment ending with word containing ai:",
+			content:  "// Welcome to Hawaii:",
+			expected: 0, // Should not match - "hawaii:" is not an AI marker
+		},
+		{
+			name:     "Comment ending with AI:",
+			content:  "// This comment ends with AI:",
+			expected: 0, // Should not match - AI: only supported at start
 		},
 	}
 
@@ -743,6 +789,18 @@ func TestCaseInsensitiveAIMarkers(t *testing.T) {
 			wantType: "!",
 		},
 		{
+			name:     "lowercase ai:",
+			content:  "// ai: needs attention",
+			expected: 1,
+			wantType: ":",
+		},
+		{
+			name:     "uppercase AI:",
+			content:  "// AI: check implementation",
+			expected: 1,
+			wantType: ":",
+		},
+		{
 			name:     "multiline with mixed case",
 			content: `/*
  * This is a multiline comment
@@ -828,5 +886,110 @@ func test() {
 	}
 	if comment3.ActionType != "?" {
 		t.Errorf("Third comment should be type '?', got %q", comment3.ActionType)
+	}
+}
+
+func TestMixedAIMarkers(t *testing.T) {
+	tests := []struct {
+		name     string
+		content  string
+		expected int
+		wantTypes []string
+		wantContents []string
+	}{
+		{
+			name:     "Comment with AI: and AI!",
+			content:  "// AI: This function needs optimization AI!",
+			expected: 1,
+			wantTypes: []string{"!"},
+			wantContents: []string{"AI: This function needs optimization AI!"},
+		},
+		{
+			name:     "Comment with AI: and AI?",
+			content:  "// AI: What about error handling here AI?",
+			expected: 1,
+			wantTypes: []string{"?"},
+			wantContents: []string{"AI: What about error handling here AI?"},
+		},
+		{
+			name: "Multi-line comment with mixed markers",
+			content: `package main
+
+// AI: This block needs review
+// Consider performance optimization
+// and error handling AI!
+
+func test() {}`,
+			expected: 1,
+			wantTypes: []string{"!"},
+			wantContents: []string{"AI: This block needs review Consider performance optimization and error handling AI!"},
+		},
+		{
+			name: "Multiline block comment with mixed markers",
+			content: `/*
+ * AI: Check this implementation
+ * for thread safety issues AI?
+ */`,
+			expected: 1,
+			wantTypes: []string{"?"},
+			wantContents: []string{"AI: Check this implementation for thread safety issues AI?"},
+		},
+		{
+			name:     "AI: in middle with AI! at end",
+			content:  "// This comment AI: has markers in various places AI!",
+			expected: 1,
+			wantTypes: []string{"!"},
+			wantContents: []string{"This comment AI: has markers in various places AI!"},
+		},
+		{
+			name:     "Comment ending with AI: (should not match)",
+			content:  "// This comment ends with AI:",
+			expected: 0,
+		},
+		{
+			name:     "Multiple AI: markers with AI?",
+			content:  "// AI: First marker AI: Second marker AI?",
+			expected: 1,
+			wantTypes: []string{"?"},
+			wantContents: []string{"AI: First marker AI: Second marker AI?"},
+		},
+		{
+			name: "Separate comments with different markers",
+			content: `// AI: This is the first comment
+// This is a separate comment AI?`,
+			expected: 1, // Should be grouped together
+			wantTypes: []string{"?"},
+			wantContents: []string{"AI: This is the first comment This is a separate comment AI?"},
+		},
+		{
+			name:     "Only AI: marker (no ? or !)",
+			content:  "// AI: This only has colon marker",
+			expected: 1,
+			wantTypes: []string{":"},
+			wantContents: []string{"AI: This only has colon marker"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			comments, err := extractAICommentsFromString(tt.content, "test.go")
+			if err != nil {
+				t.Fatalf("extractAICommentsFromString() error = %v", err)
+			}
+
+			if len(comments) != tt.expected {
+				t.Errorf("Expected %d comments, got %d", tt.expected, len(comments))
+				return
+			}
+
+			for i, comment := range comments {
+				if i < len(tt.wantTypes) && comment.ActionType != tt.wantTypes[i] {
+					t.Errorf("Comment %d: Expected ActionType %q, got %q", i, tt.wantTypes[i], comment.ActionType)
+				}
+				if i < len(tt.wantContents) && comment.Content != tt.wantContents[i] {
+					t.Errorf("Comment %d: Expected Content %q, got %q", i, tt.wantContents[i], comment.Content)
+				}
+			}
+		})
 	}
 }

@@ -19,7 +19,7 @@ type AIComment struct {
 	Content      string   // The comment content (stripped of comment markers)
 	FullLine     string   // The complete line containing the comment
 	ContextLines []string // Surrounding lines for context
-	ActionType   string   // "?" for questions, "!" for commands
+	ActionType   string   // "?" for questions, "!" for commands, ":" for context
 	Hash         string   // Fingerprint for caching/deduplication
 }
 
@@ -39,7 +39,7 @@ type CommentPattern struct {
 var commentPatterns = map[string]CommentPattern{
 	".go": {
 		SingleLine: []*regexp.Regexp{
-			regexp.MustCompile(`(?i)^\s*//\s*(.*AI[?!].*)`),
+			regexp.MustCompile(`(?i)^\s*//\s*(.*AI[?!:].*)`),
 		},
 		Multiline: []MultilineCommentPair{
 			{
@@ -50,7 +50,7 @@ var commentPatterns = map[string]CommentPattern{
 	},
 	".js": {
 		SingleLine: []*regexp.Regexp{
-			regexp.MustCompile(`(?i)^\s*//\s*(.*AI[?!].*)`),
+			regexp.MustCompile(`(?i)^\s*//\s*(.*AI[?!:].*)`),
 		},
 		Multiline: []MultilineCommentPair{
 			{
@@ -61,7 +61,7 @@ var commentPatterns = map[string]CommentPattern{
 	},
 	".py": {
 		SingleLine: []*regexp.Regexp{
-			regexp.MustCompile(`(?i)^\s*#\s*(.*AI[?!].*)`),
+			regexp.MustCompile(`(?i)^\s*#\s*(.*AI[?!:].*)`),
 		},
 		Multiline: []MultilineCommentPair{
 			{
@@ -78,6 +78,17 @@ var commentPatterns = map[string]CommentPattern{
 
 // Cache for processed comments to avoid reprocessing
 var processedComments = make(map[string]bool)
+
+// Maximum comment content length before truncation
+const maxCommentLength = 1000
+
+// truncateComment truncates comment content if it exceeds maxCommentLength
+func truncateComment(content string) string {
+	if len(content) <= maxCommentLength {
+		return content
+	}
+	return content[:maxCommentLength] + "...(truncated)"
+}
 
 // ExtractAIComments scans a file for AI-related comments
 func ExtractAIComments(filePath string) ([]AIComment, error) {
@@ -179,26 +190,22 @@ func extractSingleLineComments(filePath string, lines []string, pattern *regexp.
 					}
 				}
 			}
-			combinedContent := strings.Join(allContent, " ")
+			combinedContent := truncateComment(strings.Join(allContent, " "))
 
-			// Check if the combined content has AI markers (only at start or end, case-insensitive)
+			// Check if the combined content has AI markers
+			// Priority: AI! and AI? take precedence over AI:
+			// AI: is only supported at the start, not at the end
 			var actionType string
 			lowerContent := strings.ToLower(combinedContent)
-			if strings.HasPrefix(lowerContent, "ai?") || strings.HasPrefix(lowerContent, "ai!") {
-				// Starts with AI marker
-				if strings.HasPrefix(lowerContent, "ai?") {
-					actionType = "?"
-				} else {
-					actionType = "!"
-				}
-			} else if strings.HasSuffix(lowerContent, " ai?") || strings.HasSuffix(lowerContent, " ai!") || 
-					  lowerContent == "ai?" || lowerContent == "ai!" {
-				// Ends with AI marker (with space before) or is exactly the AI marker
-				if strings.HasSuffix(lowerContent, " ai?") || lowerContent == "ai?" {
-					actionType = "?"
-				} else {
-					actionType = "!"
-				}
+			
+			// Check for AI! first (highest priority) - can be at start or end
+			if strings.HasSuffix(lowerContent, " ai!") || lowerContent == "ai!" || strings.HasPrefix(lowerContent, "ai!") {
+				actionType = "!"
+			} else if strings.HasSuffix(lowerContent, " ai?") || lowerContent == "ai?" || strings.HasPrefix(lowerContent, "ai?") {
+				actionType = "?"
+			} else if strings.HasPrefix(lowerContent, "ai:") {
+				// AI: only supported at start
+				actionType = ":"
 			} else {
 				// AI marker is in the middle or not present - skip this comment
 				continue
@@ -234,26 +241,22 @@ func extractSingleLineComments(filePath string, lines []string, pattern *regexp.
 			// Handle inline comments individually (don't group them)
 			// Extract comment content after comment prefix
 			if parts := strings.Split(line, commentPrefix); len(parts) >= 2 {
-				commentContent := strings.TrimSpace(strings.Join(parts[1:], commentPrefix))
+				commentContent := truncateComment(strings.TrimSpace(strings.Join(parts[1:], commentPrefix)))
 
-				// Check if it contains AI markers (only at start or end, case-insensitive)
+				// Check if it contains AI markers
+				// Priority: AI! and AI? take precedence over AI:
+				// AI: is only supported at the start, not at the end
 				var actionType string
 				lowerContent := strings.ToLower(commentContent)
-				if strings.HasPrefix(lowerContent, "ai?") || strings.HasPrefix(lowerContent, "ai!") {
-					// Starts with AI marker
-					if strings.HasPrefix(lowerContent, "ai?") {
-						actionType = "?"
-					} else {
-						actionType = "!"
-					}
-				} else if strings.HasSuffix(lowerContent, " ai?") || strings.HasSuffix(lowerContent, " ai!") || 
-						  lowerContent == "ai?" || lowerContent == "ai!" {
-					// Ends with AI marker (with space before) or is exactly the AI marker
-					if strings.HasSuffix(lowerContent, " ai?") || lowerContent == "ai?" {
-						actionType = "?"
-					} else {
-						actionType = "!"
-					}
+				
+				// Check for AI! first (highest priority) - can be at start or end
+				if strings.HasSuffix(lowerContent, " ai!") || lowerContent == "ai!" || strings.HasPrefix(lowerContent, "ai!") {
+					actionType = "!"
+				} else if strings.HasSuffix(lowerContent, " ai?") || lowerContent == "ai?" || strings.HasPrefix(lowerContent, "ai?") {
+					actionType = "?"
+				} else if strings.HasPrefix(lowerContent, "ai:") {
+					// AI: only supported at start
+					actionType = ":"
 				} else {
 					// AI marker is in the middle or not present - skip this comment
 					continue
@@ -301,14 +304,19 @@ func extractMultilineComments(filePath string, lines []string, pair MultilineCom
 				// Process the comment immediately
 				fullComment := strings.Join(commentLines, "\n")
 				lowerComment := strings.ToLower(fullComment)
-				if strings.Contains(lowerComment, "ai?") || strings.Contains(lowerComment, "ai!") {
+				if strings.Contains(lowerComment, "ai?") || strings.Contains(lowerComment, "ai!") || strings.Contains(lowerComment, "ai:") {
+					// Priority: AI! and AI? take precedence over AI:
 					actionType := "?"
 					if strings.Contains(lowerComment, "ai!") {
 						actionType = "!"
+					} else if strings.Contains(lowerComment, "ai?") {
+						actionType = "?"
+					} else {
+						actionType = ":"
 					}
 
 					// Extract content by removing comment markers
-					content := extractMultilineContent(fullComment)
+					content := truncateComment(extractMultilineContent(fullComment))
 
 					comment := AIComment{
 						FilePath:   filePath,
@@ -341,14 +349,19 @@ func extractMultilineComments(filePath string, lines []string, pair MultilineCom
 				// Check if the comment block contains the keywords
 				fullComment := strings.Join(commentLines, "\n")
 				lowerComment := strings.ToLower(fullComment)
-				if strings.Contains(lowerComment, "ai?") || strings.Contains(lowerComment, "ai!") {
+				if strings.Contains(lowerComment, "ai?") || strings.Contains(lowerComment, "ai!") || strings.Contains(lowerComment, "ai:") {
+					// Priority: AI! and AI? take precedence over AI:
 					actionType := "?"
 					if strings.Contains(lowerComment, "ai!") {
 						actionType = "!"
+					} else if strings.Contains(lowerComment, "ai?") {
+						actionType = "?"
+					} else {
+						actionType = ":"
 					}
 
 					// Extract content by removing comment markers.
-					content := extractMultilineContent(fullComment)
+					content := truncateComment(extractMultilineContent(fullComment))
 
 					comment := AIComment{
 						FilePath:   filePath,

@@ -134,17 +134,25 @@ func renderCommentPrompt(comment AIComment) string {
 		locationStr = fmt.Sprintf("at lines %d-%d", comment.LineNumber, comment.EndLine)
 	}
 
-	if comment.ActionType == "!" {
+	switch comment.ActionType {
+	case "!":
 		return fmt.Sprintf("See %s %s and surrounding context. Summarise the ask, and make the appropriate changes",
 			comment.FilePath, locationStr)
-	} else {
+	case "?":
 		return fmt.Sprintf("See %s %s and surrounding context. Summarise the question and answer it. DO NOT MAKE CHANGES.",
+			comment.FilePath, locationStr)
+	case ":":
+		return fmt.Sprintf("Context from code comment at %s %s (no action required)",
+			comment.FilePath, locationStr)
+	default:
+		return fmt.Sprintf("See %s %s and surrounding context.",
 			comment.FilePath, locationStr)
 	}
 }
 
-// renderMultipleCommentsPrompt creates a prompt for multiple AI comments
+// renderMultipleCommentsPrompt creates a prompt for multiple AI comments (file watcher only)
 func renderMultipleCommentsPrompt(comments []AIComment) string {
+	// File watcher only processes ? and ! comments, so we don't need to separate by type
 	// Determine action type based on precedence (! takes precedence over ?)
 	hasAction := false
 	for _, comment := range comments {
@@ -171,6 +179,39 @@ func renderMultipleCommentsPrompt(comments []AIComment) string {
 		}
 
 		prompt.WriteString(fmt.Sprintf("• %s at %s\n", comment.FilePath, locationStr))
+	}
+
+	return prompt.String()
+}
+
+// renderContextPrompt creates a prompt for single AI context comment
+func renderContextPrompt(comment AIComment) string {
+	var locationStr string
+	if comment.EndLine == 0 || comment.EndLine == comment.LineNumber {
+		locationStr = fmt.Sprintf("line %d", comment.LineNumber)
+	} else {
+		locationStr = fmt.Sprintf("lines %d-%d", comment.LineNumber, comment.EndLine)
+	}
+
+	return fmt.Sprintf("Context from %s at %s:\n%s", comment.FilePath, locationStr, comment.Content)
+}
+
+// renderMultipleContextPrompt creates a prompt for multiple AI context comments
+func renderMultipleContextPrompt(comments []AIComment) string {
+	var prompt strings.Builder
+
+	for i, comment := range comments {
+		var locationStr string
+		if comment.EndLine == 0 || comment.EndLine == comment.LineNumber {
+			locationStr = fmt.Sprintf("line %d", comment.LineNumber)
+		} else {
+			locationStr = fmt.Sprintf("lines %d-%d", comment.LineNumber, comment.EndLine)
+		}
+
+		if i > 0 {
+			prompt.WriteString("\n\n")
+		}
+		prompt.WriteString(fmt.Sprintf("%s at %s:\n%s", comment.FilePath, locationStr, comment.Content))
 	}
 
 	return prompt.String()
@@ -356,7 +397,7 @@ func handleFileChange(filePath string, wrapper *CLIWrapper) {
 		}
 		log.Printf("  ---")
 
-		// Collect unprocessed AI comments (both "?" and "!" action types)
+		// File watcher only processes ? and ! comments (quick actions)
 		if comment.ActionType == "?" || comment.ActionType == "!" {
 			if !isCommentProcessed(comment) {
 				log.Printf("Found new AI comment (%s): %s", comment.ActionType, comment.Hash)
@@ -364,6 +405,9 @@ func handleFileChange(filePath string, wrapper *CLIWrapper) {
 			} else {
 				log.Printf("Skipping already processed AI comment: %s", comment.Hash)
 			}
+		} else if comment.ActionType == ":" {
+			// AI comments are ignored by file watcher (manual invocation only)
+			log.Printf("Ignoring AI context comment (:) - use manual search to access: %s", comment.Hash)
 		} else {
 			log.Printf("Skipping AI comment with unsupported action type: %s", comment.ActionType)
 		}
@@ -439,14 +483,14 @@ func triggerAICommentSearch(rootDir string, wrapper *CLIWrapper) {
 			log.Printf("    ActionType: %s", comment.ActionType)
 			log.Printf("    Hash: %s", comment.Hash)
 
-			// Collect unprocessed AI comments (both "?" and "!" action types)
-			if comment.ActionType == "?" || comment.ActionType == "!" {
-				if !isCommentProcessed(comment) {
-					log.Printf("    Status: NEW - will process")
-					allUnprocessedComments = append(allUnprocessedComments, comment)
-				} else {
-					log.Printf("    Status: ALREADY PROCESSED - skipping")
-				}
+			// Manual invocation only processes : comments (context)
+			if comment.ActionType == ":" {
+				// AI comments are included for context in manual search
+				log.Printf("    Status: CONTEXT - will include")
+				allUnprocessedComments = append(allUnprocessedComments, comment)
+			} else if comment.ActionType == "?" || comment.ActionType == "!" {
+				// ? and ! comments are ignored by manual search (file watcher only)
+				log.Printf("    Status: QUICK ACTION - ignored by manual search")
 			} else {
 				log.Printf("    Status: UNSUPPORTED ACTION TYPE - skipping")
 			}
@@ -454,28 +498,25 @@ func triggerAICommentSearch(rootDir string, wrapper *CLIWrapper) {
 		}
 	}
 
-	// Process all unprocessed comments together (same logic as handleFileChange)
+	// Process context comments (manual invocation only handles : comments)
 	if len(allUnprocessedComments) > 0 {
+		// All comments should be : (context) type for manual invocation
 		var prompt string
 		if len(allUnprocessedComments) == 1 {
-			// Single comment - use existing template
-			prompt = renderCommentPrompt(allUnprocessedComments[0])
+			// Single context comment
+			prompt = renderContextPrompt(allUnprocessedComments[0])
 		} else {
-			// Multiple comments - use new template
-			prompt = renderMultipleCommentsPrompt(allUnprocessedComments)
+			// Multiple context comments
+			prompt = renderMultipleContextPrompt(allUnprocessedComments)
 		}
 
-		log.Printf("Sending prompt to underlying program: %s", prompt)
+		log.Printf("Sending context prompt to underlying program: %s", prompt)
 
-		// Send the combined prompt to the wrapped program
-		if err := wrapper.SendCommand(prompt); err != nil {
-			log.Printf("ERROR: Failed to send prompt to wrapped program: %v", err)
+		// Send the context (without final newline to avoid auto-sending)
+		if _, err := wrapper.stdin.Write([]byte(prompt)); err != nil {
+			log.Printf("ERROR: Failed to send context to wrapped program: %v", err)
 		} else {
-			// Mark all processed comments as processed
-			for _, comment := range allUnprocessedComments {
-				markCommentProcessed(comment)
-			}
-			log.Printf("Successfully sent prompt and marked %d comments as processed", len(allUnprocessedComments))
+			log.Printf("Successfully sent context for %d comments (no auto-submit)", len(allUnprocessedComments))
 		}
 	} else {
 		log.Printf("No unprocessed AI comments found")
