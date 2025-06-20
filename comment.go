@@ -59,6 +59,21 @@ var commentPatterns = map[string]CommentPattern{
 			},
 		},
 	},
+	".py": {
+		SingleLine: []*regexp.Regexp{
+			regexp.MustCompile(`(?i)^\s*#\s*(.*AI[?!].*)`),
+		},
+		Multiline: []MultilineCommentPair{
+			{
+				Start: regexp.MustCompile(`"""`),
+				End:   regexp.MustCompile(`"""`),
+			},
+			{
+				Start: regexp.MustCompile(`'''`),
+				End:   regexp.MustCompile(`'''`),
+			},
+		},
+	},
 }
 
 // Cache for processed comments to avoid reprocessing
@@ -104,30 +119,42 @@ func extractSingleLineComments(filePath string, lines []string, pattern *regexp.
 	var comments []AIComment
 	processedLines := make(map[int]bool) // Track which lines we've already processed
 
+	// Determine comment prefix from file extension
+	ext := filepath.Ext(filePath)
+	var commentPrefix string
+	switch ext {
+	case ".py":
+		commentPrefix = "#"
+	case ".go", ".js":
+		commentPrefix = "//"
+	default:
+		commentPrefix = "//" // Default fallback
+	}
+
 	for i, line := range lines {
 		if processedLines[i] {
 			continue // Skip lines already processed as part of a comment block
 		}
 
 		// Check if this line contains a comment at all
-		if !strings.Contains(line, "//") {
+		if !strings.Contains(line, commentPrefix) {
 			continue
 		}
 
 		// Check if this is a whole-line comment vs inline comment
-		beforeComment := strings.Split(line, "//")[0]
+		beforeComment := strings.Split(line, commentPrefix)[0]
 		isWholeLine := strings.TrimSpace(beforeComment) == ""
-		
+
 		if isWholeLine {
 			// Look for consecutive whole-line comments to group them
 			commentLines := []string{line}
 			endLine := i
-			
+
 			// Check subsequent lines for consecutive whole-line comments
 			for j := i + 1; j < len(lines); j++ {
 				// Check if the line contains a comment (even without AI marker)
-				if strings.Contains(lines[j], "//") {
-					beforeNextComment := strings.Split(lines[j], "//")[0]
+				if strings.Contains(lines[j], commentPrefix) {
+					beforeNextComment := strings.Split(lines[j], commentPrefix)[0]
 					if strings.TrimSpace(beforeNextComment) == "" {
 						// This is also a whole-line comment
 						commentLines = append(commentLines, lines[j])
@@ -140,20 +167,20 @@ func extractSingleLineComments(filePath string, lines []string, pattern *regexp.
 					break // Next line is not a comment
 				}
 			}
-			
+
 			// Extract all comment content and combine
 			var allContent []string
 			for _, commentLine := range commentLines {
-				// Extract comment content after "//"
-				if parts := strings.Split(commentLine, "//"); len(parts) >= 2 {
-					content := strings.TrimSpace(strings.Join(parts[1:], "//"))
+				// Extract comment content after comment prefix
+				if parts := strings.Split(commentLine, commentPrefix); len(parts) >= 2 {
+					content := strings.TrimSpace(strings.Join(parts[1:], commentPrefix))
 					if content != "" {
 						allContent = append(allContent, content)
 					}
 				}
 			}
 			combinedContent := strings.Join(allContent, " ")
-			
+
 			// Check if the combined content has AI markers (only at start or end, case-insensitive)
 			var actionType string
 			lowerContent := strings.ToLower(combinedContent)
@@ -164,9 +191,10 @@ func extractSingleLineComments(filePath string, lines []string, pattern *regexp.
 				} else {
 					actionType = "!"
 				}
-			} else if strings.HasSuffix(lowerContent, "ai?") || strings.HasSuffix(lowerContent, "ai!") {
-				// Ends with AI marker
-				if strings.HasSuffix(lowerContent, "ai?") {
+			} else if strings.HasSuffix(lowerContent, " ai?") || strings.HasSuffix(lowerContent, " ai!") || 
+					  lowerContent == "ai?" || lowerContent == "ai!" {
+				// Ends with AI marker (with space before) or is exactly the AI marker
+				if strings.HasSuffix(lowerContent, " ai?") || lowerContent == "ai?" {
 					actionType = "?"
 				} else {
 					actionType = "!"
@@ -178,13 +206,13 @@ func extractSingleLineComments(filePath string, lines []string, pattern *regexp.
 
 			comment := AIComment{
 				FilePath:   filePath,
-				LineNumber: i + 1, // 1-indexed
+				LineNumber: i + 1,       // 1-indexed
 				EndLine:    endLine + 1, // End line (1-indexed), same as start for single line
 				Content:    combinedContent,
 				FullLine:   strings.Join(commentLines, "\n"),
 				ActionType: actionType,
 			}
-			
+
 			// For single-line blocks, set EndLine to 0 to indicate single-line
 			if len(commentLines) == 1 {
 				comment.EndLine = 0
@@ -204,10 +232,10 @@ func extractSingleLineComments(filePath string, lines []string, pattern *regexp.
 			}
 		} else {
 			// Handle inline comments individually (don't group them)
-			// Extract comment content after "//"
-			if parts := strings.Split(line, "//"); len(parts) >= 2 {
-				commentContent := strings.TrimSpace(strings.Join(parts[1:], "//"))
-				
+			// Extract comment content after comment prefix
+			if parts := strings.Split(line, commentPrefix); len(parts) >= 2 {
+				commentContent := strings.TrimSpace(strings.Join(parts[1:], commentPrefix))
+
 				// Check if it contains AI markers (only at start or end, case-insensitive)
 				var actionType string
 				lowerContent := strings.ToLower(commentContent)
@@ -218,9 +246,10 @@ func extractSingleLineComments(filePath string, lines []string, pattern *regexp.
 					} else {
 						actionType = "!"
 					}
-				} else if strings.HasSuffix(lowerContent, "ai?") || strings.HasSuffix(lowerContent, "ai!") {
-					// Ends with AI marker
-					if strings.HasSuffix(lowerContent, "ai?") {
+				} else if strings.HasSuffix(lowerContent, " ai?") || strings.HasSuffix(lowerContent, " ai!") || 
+						  lowerContent == "ai?" || lowerContent == "ai!" {
+					// Ends with AI marker (with space before) or is exactly the AI marker
+					if strings.HasSuffix(lowerContent, " ai?") || lowerContent == "ai?" {
 						actionType = "?"
 					} else {
 						actionType = "!"
@@ -233,7 +262,7 @@ func extractSingleLineComments(filePath string, lines []string, pattern *regexp.
 				comment := AIComment{
 					FilePath:   filePath,
 					LineNumber: i + 1, // 1-indexed
-					EndLine:    0,      // 0 indicates single-line comment
+					EndLine:    0,     // 0 indicates single-line comment
 					Content:    commentContent,
 					FullLine:   line,
 					ActionType: actionType,
@@ -318,7 +347,7 @@ func extractMultilineComments(filePath string, lines []string, pair MultilineCom
 						actionType = "!"
 					}
 
-					// Extract content by removing comment markers. AI?
+					// Extract content by removing comment markers.
 					content := extractMultilineContent(fullComment)
 
 					comment := AIComment{
@@ -374,15 +403,22 @@ func extractContextLines(lines []string, targetLine, contextSize int) []string {
 
 // extractMultilineContent removes comment markers from multiline comment content
 func extractMultilineContent(fullComment string) string {
-	// Remove /* and */ markers and clean up
-	content := strings.ReplaceAll(fullComment, "/*", "")
+	// Remove various multiline comment markers
+	content := fullComment
+	
+	// Remove C-style /* */ markers
+	content = strings.ReplaceAll(content, "/*", "")
 	content = strings.ReplaceAll(content, "*/", "")
+	
+	// Remove Python triple quote markers
+	content = strings.ReplaceAll(content, `"""`, "")
+	content = strings.ReplaceAll(content, `'''`, "")
 
 	// Split into lines and clean each line
 	lines := strings.Split(content, "\n")
 	var cleanLines []string
 	for _, line := range lines {
-		// Remove leading * and whitespace
+		// Remove leading * and whitespace (for C-style comments)
 		cleaned := strings.TrimSpace(line)
 		cleaned = strings.TrimPrefix(cleaned, "*")
 		cleaned = strings.TrimSpace(cleaned)

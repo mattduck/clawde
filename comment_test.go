@@ -163,6 +163,59 @@ func TestJavaScriptSingleLineComments(t *testing.T) {
 	}
 }
 
+func TestPythonSingleLineComments(t *testing.T) {
+	tests := []struct {
+		name     string
+		content  string
+		expected int
+		wantType string
+	}{
+		{
+			name:     "Python comment with AI?",
+			content:  "print('hello')\n# This needs improvement AI?\ndef test():\n    pass",
+			expected: 1,
+			wantType: "?",
+		},
+		{
+			name:     "Python comment with AI!",
+			content:  "# Refactor this function AI!\ndef test():\n    pass",
+			expected: 1,
+			wantType: "!",
+		},
+		{
+			name:     "Python comment without AI marker",
+			content:  "# This is a regular comment\ndef test():\n    pass",
+			expected: 0,
+		},
+		{
+			name:     "Python comment ending with word containing ai",
+			content:  "# Visiting hawaii?",
+			expected: 0, // Should not match
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			comments, err := extractAICommentsFromString(tt.content, "test.py")
+			if err != nil {
+				t.Fatalf("extractAICommentsFromString() error = %v", err)
+			}
+
+			if len(comments) != tt.expected {
+				t.Errorf("Expected %d comments, got %d", tt.expected, len(comments))
+				return
+			}
+
+			if tt.expected > 0 {
+				comment := comments[0]
+				if comment.ActionType != tt.wantType {
+					t.Errorf("Expected ActionType %s, got %s", tt.wantType, comment.ActionType)
+				}
+			}
+		})
+	}
+}
+
 func TestMultilineComments(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -386,7 +439,7 @@ func TestEdgeCases(t *testing.T) {
 		{
 			name:     "AI marker without space",
 			content:  "// CommentAI?",
-			expected: 1,
+			expected: 0, // Should not match - "CommentAI?" is not an AI marker
 		},
 		{
 			name:     "Case insensitivity",
@@ -397,6 +450,16 @@ func TestEdgeCases(t *testing.T) {
 			name:     "AI marker in string literal",
 			content:  `fmt.Println("This AI? is in a string")`,
 			expected: 0, // Should not match strings
+		},
+		{
+			name:     "Comment ending with word containing ai?",
+			content:  "// Traveling to hawaii?",
+			expected: 0, // Should not match - "hawaii?" is not an AI marker
+		},
+		{
+			name:     "Comment ending with word containing ai!",
+			content:  "// The brave samurai!",
+			expected: 0, // Should not match - "samurai!" is not an AI marker
 		},
 	}
 

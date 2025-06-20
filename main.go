@@ -45,6 +45,12 @@ type outputBuffer struct {
 	slowDelay    time.Duration // When idle (15fps)
 	lastInput    time.Time
 	inputTimeout time.Duration // How long to wait before switching to slow mode
+
+	// Terminal state analysis
+	currentLine      []byte       // Buffer to track the current line being built
+	lastNonEmptyLine []byte       // Buffer to track the last non-empty line
+	isInsertMode     bool         // Whether we're currently in INSERT mode
+	insertMutex      sync.RWMutex // Separate mutex for insert mode state
 }
 
 func NewCLIWrapper(command string, args ...string) (*CLIWrapper, error) {
@@ -137,6 +143,39 @@ func renderCommentPrompt(comment AIComment) string {
 	}
 }
 
+// renderMultipleCommentsPrompt creates a prompt for multiple AI comments
+func renderMultipleCommentsPrompt(comments []AIComment) string {
+	// Determine action type based on precedence (! takes precedence over ?)
+	hasAction := false
+	for _, comment := range comments {
+		if comment.ActionType == "!" {
+			hasAction = true
+			break
+		}
+	}
+
+	var prompt strings.Builder
+	if hasAction {
+		prompt.WriteString("I have multiple requests that require changes. Please review the following files and locations, summarise the asks, and make the appropriate changes:\n\n")
+	} else {
+		prompt.WriteString("I have multiple questions. Please review the following files and locations, summarise the questions, and answer them. DO NOT MAKE CHANGES.\n\n")
+	}
+
+	// Add bullet points for each comment
+	for _, comment := range comments {
+		var locationStr string
+		if comment.EndLine == 0 || comment.EndLine == comment.LineNumber {
+			locationStr = fmt.Sprintf("line %d", comment.LineNumber)
+		} else {
+			locationStr = fmt.Sprintf("lines %d-%d", comment.LineNumber, comment.EndLine)
+		}
+
+		prompt.WriteString(fmt.Sprintf("• %s at %s\n", comment.FilePath, locationStr))
+	}
+
+	return prompt.String()
+}
+
 func (w *CLIWrapper) Close() error {
 	if w.ptmx != nil {
 		w.ptmx.Close()
@@ -180,6 +219,9 @@ func (w *CLIWrapper) startThrottledOutput() {
 			// Add the raw bytes to buffer (preserves \r, ANSI codes, etc.)
 			buf.data = append(buf.data, buffer[:n]...)
 
+			// Analyze the new data for INSERT mode detection
+			w.updateInsertMode(buffer[:n])
+
 			// Update delay based on recent input activity
 			now := time.Now()
 			if now.Sub(buf.lastInput) < buf.inputTimeout {
@@ -213,6 +255,54 @@ func (w *CLIWrapper) markUserInput() {
 	w.outputBuffer.mutex.Unlock()
 }
 
+// isInInsertMode safely checks if we're currently in INSERT mode
+func (w *CLIWrapper) isInInsertMode() bool {
+	w.outputBuffer.insertMutex.RLock()
+	defer w.outputBuffer.insertMutex.RUnlock()
+	return w.outputBuffer.isInsertMode
+}
+
+// updateInsertMode analyzes the output buffer and updates INSERT mode state
+func (w *CLIWrapper) updateInsertMode(newData []byte) {
+	w.outputBuffer.insertMutex.Lock()
+	defer w.outputBuffer.insertMutex.Unlock()
+
+	// Update the current line buffer by processing new data
+	for _, b := range newData {
+		if b == '\n' || b == '\r' {
+			// New line detected - if current line is non-empty, save it as last non-empty line
+			if len(w.outputBuffer.currentLine) > 0 {
+				// Make a copy of the current line to store as last non-empty line
+				w.outputBuffer.lastNonEmptyLine = make([]byte, len(w.outputBuffer.currentLine))
+				copy(w.outputBuffer.lastNonEmptyLine, w.outputBuffer.currentLine)
+			}
+			// Reset the current line buffer
+			w.outputBuffer.currentLine = w.outputBuffer.currentLine[:0]
+		} else if b >= 32 && b <= 126 {
+			// Printable ASCII character, add to current line
+			w.outputBuffer.currentLine = append(w.outputBuffer.currentLine, b)
+		}
+		// Note: We ignore ANSI escape sequences and other control characters
+		// for simplicity, but this might need refinement for more robust detection
+	}
+
+	// Check if the last non-empty line contains '-- INSERT --'
+	lastLineStr := string(w.outputBuffer.lastNonEmptyLine)
+	// oldInsertMode := w.outputBuffer.isInsertMode
+	w.outputBuffer.isInsertMode = strings.Contains(lastLineStr, "-- INSERT ")
+
+	// Log mode changes for debugging
+	// if oldInsertMode != w.outputBuffer.isInsertMode {
+	// 	if w.outputBuffer.isInsertMode {
+	// 		// log.Printf("INSERT mode detected: %q", lastLineStr)
+	// 		log.Printf("INSERT mode detected")
+	// 	} else {
+	// 		log.Printf("INSERT mode ended")
+	// 		// log.Printf("INSERT mode ended: %q", lastLineStr)
+	// 	}
+	// }
+}
+
 // setupResizeHandler handles terminal window resize events
 func (w *CLIWrapper) setupResizeHandler() {
 	sigwinch := make(chan os.Signal, 1)
@@ -232,7 +322,6 @@ func (w *CLIWrapper) setupResizeHandler() {
 	}()
 }
 
-
 // handleFileChange processes file changes and extracts AI comments
 func handleFileChange(filePath string, wrapper *CLIWrapper) {
 	log.Printf("Processing file change: %s", filePath)
@@ -250,6 +339,9 @@ func handleFileChange(filePath string, wrapper *CLIWrapper) {
 	}
 
 	log.Printf("=== AI COMMENTS FOUND IN %s ===", filePath)
+
+	// Gather all unprocessed comments first
+	var unprocessedComments []AIComment
 	for i, comment := range comments {
 		log.Printf("Comment #%d:", i+1)
 		log.Printf("  FilePath: %s", comment.FilePath)
@@ -264,24 +356,11 @@ func handleFileChange(filePath string, wrapper *CLIWrapper) {
 		}
 		log.Printf("  ---")
 
-		// Process AI comments (both "?" and "!" action types)
+		// Collect unprocessed AI comments (both "?" and "!" action types)
 		if comment.ActionType == "?" || comment.ActionType == "!" {
-			// Check if we've already processed this comment
 			if !isCommentProcessed(comment) {
-				log.Printf("Processing new AI comment (%s): %s", comment.ActionType, comment.Hash)
-
-				// Render the prompt template
-				prompt := renderCommentPrompt(comment)
-				log.Printf("Sending prompt to underlying program: %s", prompt)
-
-				// Send the prompt to the wrapped program
-				if err := wrapper.SendCommand(prompt); err != nil {
-					log.Printf("ERROR: Failed to send prompt to wrapped program: %v", err)
-				} else {
-					// Mark this comment as processed to avoid reprocessing
-					markCommentProcessed(comment)
-					log.Printf("Successfully sent prompt and marked comment as processed")
-				}
+				log.Printf("Found new AI comment (%s): %s", comment.ActionType, comment.Hash)
+				unprocessedComments = append(unprocessedComments, comment)
 			} else {
 				log.Printf("Skipping already processed AI comment: %s", comment.Hash)
 			}
@@ -289,7 +368,120 @@ func handleFileChange(filePath string, wrapper *CLIWrapper) {
 			log.Printf("Skipping AI comment with unsupported action type: %s", comment.ActionType)
 		}
 	}
+
+	// Process all unprocessed comments together
+	if len(unprocessedComments) > 0 {
+		var prompt string
+		if len(unprocessedComments) == 1 {
+			// Single comment - use existing template
+			prompt = renderCommentPrompt(unprocessedComments[0])
+		} else {
+			// Multiple comments - use new template
+			prompt = renderMultipleCommentsPrompt(unprocessedComments)
+		}
+
+		log.Printf("Sending prompt to underlying program: %s", prompt)
+
+		// Send the combined prompt to the wrapped program
+		if err := wrapper.SendCommand(prompt); err != nil {
+			log.Printf("ERROR: Failed to send prompt to wrapped program: %v", err)
+		} else {
+			// Mark all processed comments as processed
+			for _, comment := range unprocessedComments {
+				markCommentProcessed(comment)
+			}
+			log.Printf("Successfully sent prompt and marked %d comments as processed", len(unprocessedComments))
+		}
+	}
+
 	log.Printf("=== END AI COMMENTS ===")
+}
+
+// triggerAICommentSearch manually searches for files with AI comments and processes them
+func triggerAICommentSearch(rootDir string, wrapper *CLIWrapper) {
+	log.Printf("=== MANUAL AI COMMENT SEARCH TRIGGERED ===")
+
+	// Find all files with AI comments
+	files, err := FindFilesWithAIComments(rootDir)
+	if err != nil {
+		log.Printf("ERROR: Failed to search for AI comments: %v", err)
+		return
+	}
+
+	if len(files) == 0 {
+		log.Printf("No files with AI comments found in %s", rootDir)
+		return
+	}
+
+	log.Printf("Found AI comments in %d files:", len(files))
+
+	// Gather all unprocessed comments from all files
+	var allUnprocessedComments []AIComment
+
+	for _, filePath := range files {
+		log.Printf("Processing file: %s", filePath)
+
+		// Extract AI comments from the file
+		comments, err := ExtractAIComments(filePath)
+		if err != nil {
+			log.Printf("ERROR: Failed to extract AI comments from %s: %v", filePath, err)
+			continue
+		}
+
+		for i, comment := range comments {
+			log.Printf("  Comment #%d:", i+1)
+			log.Printf("    FilePath: %s", comment.FilePath)
+			log.Printf("    LineNumber: %d", comment.LineNumber)
+			if comment.EndLine > 0 && comment.EndLine != comment.LineNumber {
+				log.Printf("    EndLine: %d", comment.EndLine)
+			}
+			log.Printf("    Content: %s", comment.Content)
+			log.Printf("    ActionType: %s", comment.ActionType)
+			log.Printf("    Hash: %s", comment.Hash)
+
+			// Collect unprocessed AI comments (both "?" and "!" action types)
+			if comment.ActionType == "?" || comment.ActionType == "!" {
+				if !isCommentProcessed(comment) {
+					log.Printf("    Status: NEW - will process")
+					allUnprocessedComments = append(allUnprocessedComments, comment)
+				} else {
+					log.Printf("    Status: ALREADY PROCESSED - skipping")
+				}
+			} else {
+				log.Printf("    Status: UNSUPPORTED ACTION TYPE - skipping")
+			}
+			log.Printf("    ---")
+		}
+	}
+
+	// Process all unprocessed comments together (same logic as handleFileChange)
+	if len(allUnprocessedComments) > 0 {
+		var prompt string
+		if len(allUnprocessedComments) == 1 {
+			// Single comment - use existing template
+			prompt = renderCommentPrompt(allUnprocessedComments[0])
+		} else {
+			// Multiple comments - use new template
+			prompt = renderMultipleCommentsPrompt(allUnprocessedComments)
+		}
+
+		log.Printf("Sending prompt to underlying program: %s", prompt)
+
+		// Send the combined prompt to the wrapped program
+		if err := wrapper.SendCommand(prompt); err != nil {
+			log.Printf("ERROR: Failed to send prompt to wrapped program: %v", err)
+		} else {
+			// Mark all processed comments as processed
+			for _, comment := range allUnprocessedComments {
+				markCommentProcessed(comment)
+			}
+			log.Printf("Successfully sent prompt and marked %d comments as processed", len(allUnprocessedComments))
+		}
+	} else {
+		log.Printf("No unprocessed AI comments found")
+	}
+
+	log.Printf("=== END MANUAL AI COMMENT SEARCH ===")
 }
 
 func setupFileWatcher(watchDir string, wrapper *CLIWrapper) (*FileWatcher, error) {
@@ -339,9 +531,9 @@ func NewKeyRepeatDetector(threshold int, maxInterval time.Duration) *KeyRepeatDe
 func (k *KeyRepeatDetector) CheckHeld() bool {
 	k.mutex.Lock()
 	defer k.mutex.Unlock()
-	
+
 	now := time.Now()
-	
+
 	// If this is the first press or it's been too long since last press, reset
 	if k.consecutiveCount == 0 || now.Sub(k.lastKeyTime) > k.maxInterval {
 		k.consecutiveCount = 1
@@ -349,13 +541,13 @@ func (k *KeyRepeatDetector) CheckHeld() bool {
 	} else {
 		// Rapid successive key presses
 		k.consecutiveCount++
-		
+
 		// Consider it "held" after threshold rapid presses
 		if k.consecutiveCount >= k.threshold {
 			k.isHeld = true
 		}
 	}
-	
+
 	k.lastKeyTime = now
 	return k.isHeld
 }
@@ -364,12 +556,12 @@ func (k *KeyRepeatDetector) CheckHeld() bool {
 func (k *KeyRepeatDetector) SetPendingAction(callback func()) {
 	k.mutex.Lock()
 	defer k.mutex.Unlock()
-	
+
 	// Cancel any existing timer
 	if k.pendingTimer != nil {
 		k.pendingTimer.Stop()
 	}
-	
+
 	k.pendingCallback = callback
 	k.pendingTimer = time.AfterFunc(k.maxInterval, func() {
 		k.mutex.Lock()
@@ -385,7 +577,7 @@ func (k *KeyRepeatDetector) SetPendingAction(callback func()) {
 func (k *KeyRepeatDetector) CancelPending() {
 	k.mutex.Lock()
 	defer k.mutex.Unlock()
-	
+
 	if k.pendingTimer != nil {
 		k.pendingTimer.Stop()
 		k.pendingTimer = nil
@@ -397,10 +589,10 @@ func (k *KeyRepeatDetector) CancelPending() {
 func (k *KeyRepeatDetector) Reset() {
 	k.mutex.Lock()
 	defer k.mutex.Unlock()
-	
+
 	k.consecutiveCount = 0
 	k.isHeld = false
-	
+
 	// Cancel any pending action and execute it immediately (flush)
 	if k.pendingTimer != nil {
 		k.pendingTimer.Stop()
@@ -420,49 +612,63 @@ var enterDetector = NewKeyRepeatDetector(3, 500*time.Millisecond)
 // Need a way to send deferred output to the wrapped program
 var deferredOutputChannel = make(chan []byte, 100)
 
-// processEnterKey replaces enter key (ASCII 13) with backslash+enter, unless it's Ctrl+J or held Enter
-func processEnterKey(input []byte, n int, wrapper *CLIWrapper) []byte {
+// processUserInput handles special key combinations and processes enter keys
+func processUserInput(input []byte, n int, wrapper *CLIWrapper) []byte {
 	processedInput := make([]byte, 0, n*2) // Allow space for potential expansion
-	
-	// Debug: log the entire input sequence
-	log.Printf("DEBUG: Received %d bytes: %v (hex: %x)", n, input[:n], input[:n])
-	
+
 	for i := 0; i < n; i++ {
+		// Check for Ctrl+/ (ASCII 31) - trigger AI comment search
+		if input[i] == 31 {
+			log.Printf("Ctrl+/ detected - triggering AI comment search")
+			go func() {
+				triggerAICommentSearch(".", wrapper)
+			}()
+			// Don't add this to processedInput (consume the key)
+			continue
+		}
 		// Check for Ctrl+J (ASCII 10) - reliable way to send actual Enter
 		if input[i] == 10 {
 			// Ctrl+J: send actual enter
-			log.Printf("DEBUG: Detected Ctrl+J (ASCII 10), sending actual Enter")
 			processedInput = append(processedInput, 13)
 		} else if input[i] == 13 {
-			if enableHeldEnterDetection {
-				// Check if this is a held Enter key
-				shouldSendRawEnter := enterDetector.CheckHeld()
-				
-				if shouldSendRawEnter {
-					// Held Enter: cancel any pending and send actual enter
-					enterDetector.CancelPending()
-					processedInput = append(processedInput, 13)
-				} else if enterDetector.consecutiveCount == 1 {
-					// First Enter in potential sequence: defer sending backslash+enter
-					enterDetector.SetPendingAction(func() {
-						// Send backslash+enter after delay
-						deferredOutput := []byte{'\\', 13}
-						select {
-						case deferredOutputChannel <- deferredOutput:
-						default:
-							// Channel full, send directly (shouldn't happen with large buffer)
-							wrapper.stdin.Write(deferredOutput)
-						}
-					})
-					// Don't add anything to processedInput yet
+			// Check INSERT mode status when Enter is pressed
+			insertMode := wrapper.isInInsertMode()
+			log.Printf("Enter key pressed - INSERT mode: %t", insertMode)
+
+			if insertMode {
+				// In INSERT mode: use backslash+enter behavior
+				if enableHeldEnterDetection {
+					// Check if this is a held Enter key
+					shouldSendRawEnter := enterDetector.CheckHeld()
+
+					if shouldSendRawEnter {
+						// Held Enter: cancel any pending and send actual enter
+						enterDetector.CancelPending()
+						processedInput = append(processedInput, 13)
+					} else if enterDetector.consecutiveCount == 1 {
+						// First Enter in potential sequence: defer sending backslash+enter
+						enterDetector.SetPendingAction(func() {
+							// Send backslash+enter after delay
+							deferredOutput := []byte{'\\', 13}
+							select {
+							case deferredOutputChannel <- deferredOutput:
+							default:
+								// Channel full, send directly (shouldn't happen with large buffer)
+								wrapper.stdin.Write(deferredOutput)
+							}
+						})
+						// Don't add anything to processedInput yet
+					} else {
+						// Subsequent Enter in sequence but not yet held: send actual enter
+						processedInput = append(processedInput, 13)
+					}
 				} else {
-					// Subsequent Enter in sequence but not yet held: send actual enter
+					// Simple mode in INSERT: send backslash+enter for regular Enter
+					processedInput = append(processedInput, '\\')
 					processedInput = append(processedInput, 13)
 				}
 			} else {
-				// Simple mode: always send backslash+enter for regular Enter
-				log.Printf("DEBUG: Regular Enter, sending backslash+enter")
-				processedInput = append(processedInput, '\\')
+				// Not in INSERT mode: send normal Enter
 				processedInput = append(processedInput, 13)
 			}
 		} else {
@@ -498,8 +704,8 @@ func handleUserInput(wrapper *CLIWrapper) {
 					// Mark that user is typing
 					wrapper.markUserInput()
 
-					// Process the input to replace enter with backslash+enter
-					processedInput := processEnterKey(buffer, n, wrapper)
+					// Process the input to handle special keys and replace enter with backslash+enter
+					processedInput := processUserInput(buffer, n, wrapper)
 
 					// Forward the processed input to the wrapped program (if any)
 					if len(processedInput) > 0 {
@@ -518,8 +724,8 @@ func handleUserInput(wrapper *CLIWrapper) {
 					return
 				}
 				if n > 0 {
-					// Process the input to replace enter with backslash+enter
-					processedInput := processEnterKey(buffer, n, wrapper)
+					// Process the input to handle special keys and replace enter with backslash+enter
+					processedInput := processUserInput(buffer, n, wrapper)
 
 					// Forward the processed input to the wrapped program (if any)
 					if len(processedInput) > 0 {
@@ -598,6 +804,20 @@ func main() {
 
 	// Handle user input
 	handleUserInput(wrapper)
+
+	// Start periodic INSERT mode status logging for debugging
+	// go func() {
+	// 	ticker := time.NewTicker(5 * time.Second)
+	// 	defer ticker.Stop()
+	// 	for range ticker.C {
+	// 		insertMode := wrapper.isInInsertMode()
+	// 		wrapper.outputBuffer.insertMutex.RLock()
+	// 		lastNonEmptyLine := string(wrapper.outputBuffer.lastNonEmptyLine)
+	// 		currentLine := string(wrapper.outputBuffer.currentLine)
+	// 		wrapper.outputBuffer.insertMutex.RUnlock()
+	// 		log.Printf("Periodic status check - INSERT mode: %t, last non-empty line: %q, current line: %q", insertMode, lastNonEmptyLine, currentLine)
+	// 	}
+	// }()
 
 	// Handle external termination (SIGTERM, SIGHUP) gracefully
 	// Let PTY handle SIGINT (Ctrl+C) naturally to ensure proper forwarding
