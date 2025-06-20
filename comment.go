@@ -29,10 +29,18 @@ type MultilineCommentPair struct {
 	End   *regexp.Regexp // Pattern to match comment end (e.g., */)
 }
 
+// MultilineTokenPair represents the actual tokens for multiline comments
+type MultilineTokenPair struct {
+	Start string // The start token (e.g., "/*")
+	End   string // The end token (e.g., "*/")
+}
+
 // CommentPattern defines how to detect comments in different file types
 type CommentPattern struct {
-	SingleLine []*regexp.Regexp       // Multiple single-line comment patterns
-	Multiline  []MultilineCommentPair // Paired start/end patterns for multiline comments
+	SingleLine       []*regexp.Regexp       // Multiple single-line comment patterns
+	Multiline        []MultilineCommentPair // Paired start/end patterns for multiline comments
+	SingleLineTokens []string               // The actual single-line tokens (e.g., "//", "#")
+	MultilineTokens  []MultilineTokenPair   // The actual multiline tokens
 }
 
 // Comment patterns for different file extensions
@@ -47,6 +55,10 @@ var commentPatterns = map[string]CommentPattern{
 				End:   regexp.MustCompile(`\*/`),
 			},
 		},
+		SingleLineTokens: []string{"//"},
+		MultilineTokens: []MultilineTokenPair{
+			{Start: "/*", End: "*/"},
+		},
 	},
 	".js": {
 		SingleLine: []*regexp.Regexp{
@@ -57,6 +69,10 @@ var commentPatterns = map[string]CommentPattern{
 				Start: regexp.MustCompile(`/\*`),
 				End:   regexp.MustCompile(`\*/`),
 			},
+		},
+		SingleLineTokens: []string{"//"},
+		MultilineTokens: []MultilineTokenPair{
+			{Start: "/*", End: "*/"},
 		},
 	},
 	".py": {
@@ -72,6 +88,11 @@ var commentPatterns = map[string]CommentPattern{
 				Start: regexp.MustCompile(`'''`),
 				End:   regexp.MustCompile(`'''`),
 			},
+		},
+		SingleLineTokens: []string{"#"},
+		MultilineTokens: []MultilineTokenPair{
+			{Start: `"""`, End: `"""`},
+			{Start: `'''`, End: `'''`},
 		},
 	},
 }
@@ -300,23 +321,15 @@ func extractMultilineComments(filePath string, lines []string, pair MultilineCom
 			commentLines = []string{line}
 
 			// Check if end pattern is also on the same line (single-line multiline comment)
-			if pair.End.MatchString(line) {
+			// Only treat as single-line if there's actual content between start and end markers
+			if pair.End.MatchString(line) && hasContentBetweenMarkers(line, pair) {
 				// Process the comment immediately
 				fullComment := strings.Join(commentLines, "\n")
-				lowerComment := strings.ToLower(fullComment)
-				if strings.Contains(lowerComment, "ai?") || strings.Contains(lowerComment, "ai!") || strings.Contains(lowerComment, "ai:") {
-					// Priority: AI! and AI? take precedence over AI:
-					actionType := "?"
-					if strings.Contains(lowerComment, "ai!") {
-						actionType = "!"
-					} else if strings.Contains(lowerComment, "ai?") {
-						actionType = "?"
-					} else {
-						actionType = ":"
-					}
+				if hasValidAIMarker(fullComment, filepath.Ext(filePath)) {
+					actionType := determineActionType(fullComment, filepath.Ext(filePath))
 
 					// Extract content by removing comment markers
-					content := truncateComment(extractMultilineContent(fullComment))
+					content := truncateComment(extractMultilineContentForExt(fullComment, filepath.Ext(filePath)))
 
 					comment := AIComment{
 						FilePath:   filePath,
@@ -346,22 +359,13 @@ func extractMultilineComments(filePath string, lines []string, pair MultilineCom
 		if inComment {
 			commentLines = append(commentLines, line)
 			if pair.End.MatchString(line) {
-				// Check if the comment block contains the keywords
+				// Check if the comment block contains valid AI markers
 				fullComment := strings.Join(commentLines, "\n")
-				lowerComment := strings.ToLower(fullComment)
-				if strings.Contains(lowerComment, "ai?") || strings.Contains(lowerComment, "ai!") || strings.Contains(lowerComment, "ai:") {
-					// Priority: AI! and AI? take precedence over AI:
-					actionType := "?"
-					if strings.Contains(lowerComment, "ai!") {
-						actionType = "!"
-					} else if strings.Contains(lowerComment, "ai?") {
-						actionType = "?"
-					} else {
-						actionType = ":"
-					}
+				if hasValidAIMarker(fullComment, filepath.Ext(filePath)) {
+					actionType := determineActionType(fullComment, filepath.Ext(filePath))
 
 					// Extract content by removing comment markers.
-					content := truncateComment(extractMultilineContent(fullComment))
+					content := truncateComment(extractMultilineContentForExt(fullComment, filepath.Ext(filePath)))
 
 					comment := AIComment{
 						FilePath:   filePath,
@@ -391,6 +395,111 @@ func extractMultilineComments(filePath string, lines []string, pair MultilineCom
 	return comments
 }
 
+// hasContentBetweenMarkers checks if there's actual content between start and end markers on the same line
+func hasContentBetweenMarkers(line string, pair MultilineCommentPair) bool {
+	// For symmetric markers (like """ or '''), check if there's content between them
+	if pair.Start.String() == pair.End.String() {
+		// Find all matches of the marker
+		matches := pair.Start.FindAllStringIndex(line, -1)
+		if len(matches) >= 2 {
+			// Check if there's non-whitespace content between first and last match
+			start := matches[0][1]                    // End of first marker
+			end := matches[len(matches)-1][0]        // Start of last marker
+			between := strings.TrimSpace(line[start:end])
+			return between != ""
+		}
+		return false
+	}
+	
+	// For asymmetric markers (like /* */), check if there's content between them
+	startLoc := pair.Start.FindStringIndex(line)
+	endLoc := pair.End.FindStringIndex(line)
+	if startLoc != nil && endLoc != nil && startLoc[1] <= endLoc[0] {
+		between := strings.TrimSpace(line[startLoc[1]:endLoc[0]])
+		return between != ""
+	}
+	
+	return false
+}
+
+// hasValidAIMarker checks if a multiline comment has AI markers at valid positions
+func hasValidAIMarker(fullComment string, ext string) bool {
+	// Get the cleaned lines using the language-specific token removal
+	lines := extractMultilineContentLines(fullComment, ext)
+
+	for _, line := range lines {
+		if line == "" {
+			continue
+		}
+
+		lowerLine := strings.ToLower(line)
+
+		// Check if AI? or AI! is at the end of the line
+		if strings.HasSuffix(lowerLine, " ai?") || lowerLine == "ai?" ||
+			strings.HasSuffix(lowerLine, " ai!") || lowerLine == "ai!" {
+			return true
+		}
+
+		// Check if AI: is at the start of the line
+		if strings.HasPrefix(lowerLine, "ai:") {
+			return true
+		}
+
+		// Also check for AI? or AI! at the start (for consistency with single-line)
+		if strings.HasPrefix(lowerLine, "ai?") || strings.HasPrefix(lowerLine, "ai!") {
+			return true
+		}
+	}
+
+	return false
+}
+
+// determineActionType determines the action type based on AI markers in the comment
+func determineActionType(fullComment string, ext string) string {
+	// Get the cleaned lines using the language-specific token removal
+	lines := extractMultilineContentLines(fullComment, ext)
+
+	hasQuestion := false
+	hasCommand := false
+	hasContext := false
+
+	for _, line := range lines {
+		if line == "" {
+			continue
+		}
+
+		lowerLine := strings.ToLower(line)
+
+		// Check for ! (highest priority)
+		if strings.HasSuffix(lowerLine, " ai!") || lowerLine == "ai!" || strings.HasPrefix(lowerLine, "ai!") {
+			hasCommand = true
+		}
+
+		// Check for ?
+		if strings.HasSuffix(lowerLine, " ai?") || lowerLine == "ai?" || strings.HasPrefix(lowerLine, "ai?") {
+			hasQuestion = true
+		}
+
+		// Check for :
+		if strings.HasPrefix(lowerLine, "ai:") {
+			hasContext = true
+		}
+	}
+
+	// Priority: AI! > AI? > AI:
+	if hasCommand {
+		return "!"
+	} else if hasQuestion {
+		return "?"
+	} else if hasContext {
+		return ":"
+	}
+
+	// This should never happen if hasValidAIMarker returned true
+	log.Fatalf("Internal error: determineActionType called but no valid AI marker found in comment: %s", fullComment)
+	return ""
+}
+
 // extractContextLines gets N lines before and after the target line
 func extractContextLines(lines []string, targetLine, contextSize int) []string {
 	start := targetLine - contextSize
@@ -414,18 +523,28 @@ func extractContextLines(lines []string, targetLine, contextSize int) []string {
 	return context
 }
 
-// extractMultilineContent removes comment markers from multiline comment content
-func extractMultilineContent(fullComment string) string {
-	// Remove various multiline comment markers
+// extractMultilineContentLines removes comment markers and returns individual lines
+func extractMultilineContentLines(fullComment string, ext string) []string {
 	content := fullComment
-
-	// Remove C-style /* */ markers
-	content = strings.ReplaceAll(content, "/*", "")
-	content = strings.ReplaceAll(content, "*/", "")
-
-	// Remove Python triple quote markers
-	content = strings.ReplaceAll(content, `"""`, "")
-	content = strings.ReplaceAll(content, `'''`, "")
+	
+	// Get tokens for this file extension
+	if ext != "" {
+		if patterns, exists := commentPatterns[ext]; exists {
+			// Remove multiline comment markers using language-specific tokens
+			for _, tokenPair := range patterns.MultilineTokens {
+				content = strings.ReplaceAll(content, tokenPair.Start, "")
+				content = strings.ReplaceAll(content, tokenPair.End, "")
+			}
+		}
+	} else {
+		// Fallback: remove all known multiline comment markers for backward compatibility
+		for _, patterns := range commentPatterns {
+			for _, tokenPair := range patterns.MultilineTokens {
+				content = strings.ReplaceAll(content, tokenPair.Start, "")
+				content = strings.ReplaceAll(content, tokenPair.End, "")
+			}
+		}
+	}
 
 	// Split into lines and clean each line
 	lines := strings.Split(content, "\n")
@@ -440,7 +559,18 @@ func extractMultilineContent(fullComment string) string {
 		}
 	}
 
+	return cleanLines
+}
+
+// extractMultilineContentForExt removes comment markers using language-specific tokens
+func extractMultilineContentForExt(fullComment string, ext string) string {
+	cleanLines := extractMultilineContentLines(fullComment, ext)
 	return strings.Join(cleanLines, " ")
+}
+
+// extractMultilineContent removes comment markers from multiline comment content
+func extractMultilineContent(fullComment string) string {
+	return extractMultilineContentForExt(fullComment, "")
 }
 
 // generateCommentHash creates a fingerprint for comment caching

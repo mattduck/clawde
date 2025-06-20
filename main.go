@@ -123,7 +123,6 @@ func (w *CLIWrapper) SendCommand(command string) error {
 	return err
 }
 
-// AI: this one
 // renderCommentPrompt creates a prompt for AI question comments
 func renderCommentPrompt(comment AIComment) string {
 	var locationStr string

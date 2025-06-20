@@ -296,6 +296,30 @@ function test() {}`,
 			wantType: ":",
 			wantContent: "AI: this function needs review for performance optimizations",
 		},
+		{
+			name: "Single-line multiline comment with content",
+			content: "/* This is a single-line multiline comment AI? */",
+			expected: 1,
+			wantType: "?",
+			wantContent: "This is a single-line multiline comment AI?",
+		},
+		{
+			name: "Python single-line triple quote with content",
+			content: `"""This is a single-line docstring AI!"""`,
+			expected: 1,
+			wantType: "!",
+			wantContent: "This is a single-line docstring AI!",
+		},
+		{
+			name: "Empty multiline markers should not match",
+			content: `/**/`,
+			expected: 0,
+		},
+		{
+			name: "Python empty triple quotes should not match",
+			content: `""""""`,
+			expected: 0,
+		},
 	}
 
 	for _, tt := range tests {
@@ -303,6 +327,9 @@ function test() {}`,
 			ext := ".go"
 			if strings.Contains(tt.name, "JS") {
 				ext = ".js"
+			}
+			if strings.Contains(tt.name, "Python") {
+				ext = ".py"
 			}
 			
 			comments, err := extractAICommentsFromString(tt.content, "test"+ext)
@@ -886,6 +913,147 @@ func test() {
 	}
 	if comment3.ActionType != "?" {
 		t.Errorf("Third comment should be type '?', got %q", comment3.ActionType)
+	}
+}
+
+func TestAIMarkersWithinMultilineComments(t *testing.T) {
+	tests := []struct {
+		name         string
+		content      string
+		expected     int
+		wantTypes    []string
+		wantContents []string
+	}{
+		{
+			name: "AI? at end of line within multiline comment",
+			content: `/*
+ * This is a multiline comment
+ * What should this function do AI?
+ * More content here
+ */`,
+			expected:     1,
+			wantTypes:    []string{"?"},
+			wantContents: []string{"This is a multiline comment What should this function do AI? More content here"},
+		},
+		{
+			name: "AI! at end of line within multiline comment",
+			content: `/*
+ * TODO: Fix this implementation AI!
+ * It has performance issues
+ * and needs refactoring
+ */`,
+			expected:     1,
+			wantTypes:    []string{"!"},
+			wantContents: []string{"TODO: Fix this implementation AI! It has performance issues and needs refactoring"},
+		},
+		{
+			name: "AI: at start of line within multiline comment",
+			content: `/*
+ * This function needs review
+ * AI: Check for thread safety
+ * and error handling
+ */`,
+			expected:     1,
+			wantTypes:    []string{":"},
+			wantContents: []string{"This function needs review AI: Check for thread safety and error handling"},
+		},
+		{
+			name: "Multiple AI markers on different lines",
+			content: `/*
+ * AI: This needs attention
+ * What about error handling AI?
+ * Fix the performance issues AI!
+ */`,
+			expected:     1,
+			wantTypes:    []string{"!"},  // AI! takes precedence
+			wantContents: []string{"AI: This needs attention What about error handling AI? Fix the performance issues AI!"},
+		},
+		{
+			name: "AI marker in middle of line (should not match)",
+			content: `/*
+ * This comment has AI? in the middle
+ * and should not be detected
+ */`,
+			expected: 0,
+		},
+		{
+			name: "Python multiline with AI markers",
+			content: `"""
+This is a docstring
+What does this function do AI?
+More documentation here
+"""`,
+			expected:     1,
+			wantTypes:    []string{"?"},
+			wantContents: []string{"This is a docstring What does this function do AI? More documentation here"},
+		},
+		{
+			name: "Consecutive single-line comments with AI marker on separate line",
+			content: `// This is a long comment that
+// spans multiple lines and asks
+// a question about the code
+// AI?`,
+			expected:     1,
+			wantTypes:    []string{"?"},
+			wantContents: []string{"This is a long comment that spans multiple lines and asks a question about the code AI?"},
+		},
+		{
+			name: "AI marker at start of its own line in multiline",
+			content: `/*
+ * This function does something
+ * AI!
+ * Make it better
+ */`,
+			expected:     1,
+			wantTypes:    []string{"!"},
+			wantContents: []string{"This function does something AI! Make it better"},
+		},
+		{
+			name: "Mixed single and multiline with line markers",
+			content: `// First part of comment
+// What should happen here AI?
+/*
+ * Another comment block
+ * Fix this implementation AI!
+ */`,
+			expected: 2,
+			wantTypes: []string{"?", "!"},
+			wantContents: []string{
+				"First part of comment What should happen here AI?",
+				"Another comment block Fix this implementation AI!",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ext := ".go"
+			if strings.Contains(tt.content, `"""`) {
+				ext = ".py"
+			}
+			
+			comments, err := extractAICommentsFromString(tt.content, "test"+ext)
+			if err != nil {
+				t.Fatalf("extractAICommentsFromString() error = %v", err)
+			}
+
+			if len(comments) != tt.expected {
+				t.Errorf("Expected %d comments, got %d", tt.expected, len(comments))
+				for i, c := range comments {
+					t.Errorf("  Comment %d: %q (type: %s)", i, c.Content, c.ActionType)
+				}
+				return
+			}
+
+			for i, comment := range comments {
+				if i < len(tt.wantTypes) && comment.ActionType != tt.wantTypes[i] {
+					t.Errorf("Comment %d: Expected ActionType %q, got %q", i, tt.wantTypes[i], comment.ActionType)
+				}
+				if i < len(tt.wantContents) && comment.Content != tt.wantContents[i] {
+					t.Errorf("Comment %d: Expected Content %q, got %q", i, tt.wantContents[i], comment.Content)
+				}
+			}
+		})
 	}
 }
 
