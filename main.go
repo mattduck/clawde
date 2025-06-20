@@ -746,15 +746,15 @@ func main() {
 	}
 	log.SetOutput(logFile)
 
-	if len(os.Args) < 2 {
-		fmt.Println("Usage: go run main.go <command> [args...]")
-		fmt.Println("Example: go run main.go python3")
-		fmt.Println("Example: go run main.go node")
+	// Always look for "claude" program on PATH
+	command, err := exec.LookPath("claude")
+	if err != nil {
+		fmt.Printf("Error: 'claude' program not found on PATH: %v\n", err)
 		os.Exit(1)
 	}
 
-	command := os.Args[1]
-	args := os.Args[2:]
+	// Pass all arguments straight through to claude
+	args := os.Args[1:]
 
 	// Create the CLI wrapper first (program starts in canonical mode like normal shell)
 	wrapper, err := NewCLIWrapper(command, args...)
