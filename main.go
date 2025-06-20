@@ -10,7 +10,6 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
-	"time"
 
 	"github.com/creack/pty"
 	"github.com/fsnotify/fsnotify"
@@ -26,7 +25,7 @@ type CLIWrapper struct {
 
 func NewCLIWrapper(command string, args ...string) (*CLIWrapper, error) {
 	cmd := exec.Command(command, args...)
-	
+
 	// Start the command with a pty
 	ptmx, err := pty.Start(cmd)
 	if err != nil {
@@ -64,51 +63,119 @@ func (w *CLIWrapper) CopyOutput() {
 }
 
 func setupFileWatcher(watchDir string, wrapper *CLIWrapper) error {
+	log.Printf("Starting file watcher setup for directory: %s", watchDir)
+	
+	// Check if the watch directory exists
+	if _, err := os.Stat(watchDir); os.IsNotExist(err) {
+		log.Printf("ERROR: Watch directory does not exist: %s", watchDir)
+		return fmt.Errorf("watch directory does not exist: %s", watchDir)
+	}
+	
 	watcher, err := fsnotify.NewWatcher()
 	if err != nil {
+		log.Printf("ERROR: Failed to create file watcher: %v", err)
 		return fmt.Errorf("failed to create file watcher: %w", err)
 	}
 
+	log.Printf("File watcher created successfully")
+
 	go func() {
 		defer watcher.Close()
-		
+		log.Printf("File watcher goroutine started, listening for events...")
+
 		for {
 			select {
 			case event, ok := <-watcher.Events:
 				if !ok {
+					log.Printf("File watcher events channel closed")
 					return
 				}
-				
-				// Only react to write events on specific file types
+
+				log.Printf("Raw file event received: %s | Op: %s", event.Name, event.Op.String())
+
+				// Log all event types for debugging
+				if event.Op&fsnotify.Create == fsnotify.Create {
+					log.Printf("CREATE event: %s", event.Name)
+				}
 				if event.Op&fsnotify.Write == fsnotify.Write {
-					ext := filepath.Ext(event.Name)
-					if ext == ".py" || ext == ".js" || ext == ".go" {
-						
-						// Send a command to the wrapped CLI
-						// This is just an example - customize based on your CLI
-						filename := filepath.Base(event.Name)
-						command := fmt.Sprintf(`print("File %s was modified at %s")`, 
-							filename, time.Now().Format("15:04:05"))
-						
-						if err := wrapper.SendCommand(command); err != nil {
-							log.Printf("Error sending command: %v", err)
-						}
-					}
+					log.Printf("WRITE event: %s", event.Name)
 				}
-				
+				if event.Op&fsnotify.Remove == fsnotify.Remove {
+					log.Printf("REMOVE event: %s", event.Name)
+				}
+				if event.Op&fsnotify.Rename == fsnotify.Rename {
+					log.Printf("RENAME event: %s", event.Name)
+				}
+				if event.Op&fsnotify.Chmod == fsnotify.Chmod {
+					log.Printf("CHMOD event: %s", event.Name)
+				}
+
+				// React to write and create events on specific file types
+				// Many editors use atomic replacement (create temp file, rename) instead of direct writes
+				if event.Op&fsnotify.Write == fsnotify.Write || event.Op&fsnotify.Create == fsnotify.Create {
+					ext := filepath.Ext(event.Name)
+					log.Printf("File extension detected: %s for file %s", ext, event.Name)
+					
+					// Skip temporary files (ending with ~, .tmp, .swp, etc.)
+					if strings.HasSuffix(event.Name, "~") || 
+					   strings.HasSuffix(event.Name, ".tmp") || 
+					   strings.HasSuffix(event.Name, ".swp") ||
+					   strings.Contains(event.Name, ".#") {
+						log.Printf("Ignoring temporary file: %s", event.Name)
+					} else if ext == ".py" || ext == ".js" || ext == ".go" {
+						log.Printf("File change detected for monitored extension: %s", event.Name)
+
+						// Send the file path as a safe string to the underlying program
+						// Use %q to safely quote the path and escape any special characters
+						command := fmt.Sprintf("%q", event.Name)
+
+						log.Printf("Sending command to wrapped program: %s", command)
+						if err := wrapper.SendCommand(command); err != nil {
+							log.Printf("ERROR: Failed to send command to wrapped program: %v", err)
+						} else {
+							log.Printf("Command sent successfully to wrapped program")
+						}
+					} else {
+						log.Printf("Ignoring file change for unmonitored extension: %s (file: %s)", ext, event.Name)
+					}
+				} else {
+					log.Printf("Ignoring event type %s for file %s", event.Op.String(), event.Name)
+				}
+
 			case err, ok := <-watcher.Errors:
+				log.Printf("File watcher error: %v", err)
 				if !ok {
+					log.Printf("File watcher errors channel closed")
 					return
 				}
-				log.Printf("File watcher error: %v", err)
 			}
 		}
 	}()
 
 	// Add the directory to the watcher
+	log.Printf("Adding directory to watcher: %s", watchDir)
 	err = watcher.Add(watchDir)
 	if err != nil {
+		log.Printf("ERROR: Failed to add directory to watcher: %v", err)
 		return fmt.Errorf("failed to add directory to watcher: %w", err)
+	}
+
+	log.Printf("Directory successfully added to watcher: %s", watchDir)
+	
+	// List files in the directory for debugging
+	files, err := filepath.Glob(filepath.Join(watchDir, "*"))
+	if err != nil {
+		log.Printf("WARNING: Could not list files in watch directory: %v", err)
+	} else {
+		log.Printf("Files in watch directory (%d total):", len(files))
+		for _, file := range files {
+			info, err := os.Stat(file)
+			if err != nil {
+				log.Printf("  - %s (stat error: %v)", file, err)
+			} else {
+				log.Printf("  - %s (size: %d, mode: %s)", file, info.Size(), info.Mode())
+			}
+		}
 	}
 
 	return nil
@@ -121,8 +188,15 @@ func handleUserInput(wrapper *CLIWrapper) {
 	}()
 }
 
-
 func main() {
+	// Set up logging to file to avoid interfering with wrapped program output
+	logFile, err := os.OpenFile("/tmp/matt.log", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
+	if err != nil {
+		fmt.Printf("Failed to open log file: %v\n", err)
+		os.Exit(1)
+	}
+	log.SetOutput(logFile)
+
 	if len(os.Args) < 2 {
 		fmt.Println("Usage: go run main.go <command> [args...]")
 		fmt.Println("Example: go run main.go python3")
@@ -134,15 +208,24 @@ func main() {
 	args := os.Args[2:]
 
 	// Put terminal in raw mode to pass through control characters
-	oldState, err := term.MakeRaw(int(os.Stdin.Fd()))
-	if err != nil {
-		log.Fatalf("Failed to set terminal to raw mode: %v", err)
+	var oldState *term.State
+	if term.IsTerminal(int(os.Stdin.Fd())) {
+		var err error
+		oldState, err = term.MakeRaw(int(os.Stdin.Fd()))
+		if err != nil {
+			log.Printf("Warning: Failed to set terminal to raw mode: %v", err)
+		} else {
+			defer term.Restore(int(os.Stdin.Fd()), oldState)
+		}
+	} else {
+		log.Printf("Input is not a terminal, skipping raw mode setup")
 	}
-	defer term.Restore(int(os.Stdin.Fd()), oldState)
 
 	// Function to restore terminal and exit
 	exitWithRestore := func(code int) {
-		term.Restore(int(os.Stdin.Fd()), oldState)
+		if oldState != nil {
+			term.Restore(int(os.Stdin.Fd()), oldState)
+		}
 		os.Exit(code)
 	}
 
@@ -162,7 +245,7 @@ func main() {
 	if len(os.Args) > 2 && strings.HasPrefix(os.Args[len(os.Args)-1], "--watch=") {
 		watchDir = strings.TrimPrefix(os.Args[len(os.Args)-1], "--watch=")
 	}
-	
+
 	if err := setupFileWatcher(watchDir, wrapper); err != nil {
 		log.Printf("Failed to setup file watcher: %v", err)
 		exitWithRestore(1)
@@ -181,7 +264,6 @@ func main() {
 		exitWithRestore(0)
 	}()
 
-
 	// Wait for the wrapped process to finish
 	err = wrapper.cmd.Wait()
 	exitCode := 0
@@ -193,7 +275,7 @@ func main() {
 			exitCode = 1
 		}
 	}
-	
+
 	// Exit with the same code as the wrapped process
 	exitWithRestore(exitCode)
 }
