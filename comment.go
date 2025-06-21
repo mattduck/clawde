@@ -1,5 +1,7 @@
 package main
 
+// NO_CLAWDE - This file contains AI marker examples and should be excluded from comment detection
+
 import (
 	"crypto/sha256"
 	"fmt"
@@ -111,6 +113,76 @@ func truncateComment(content string) string {
 	return content[:maxCommentLength] + "...(truncated)"
 }
 
+// checkForOptOut scans file content for NO_CLAWDE marker in any comment type
+func checkForOptOut(content string, ext string) bool {
+	lines := strings.Split(content, "\n")
+	
+	// Get comment patterns for this file extension
+	patterns, exists := commentPatterns[ext]
+	if !exists {
+		return false
+	}
+
+	// Check single-line comments for NO_CLAWDE
+	for _, line := range lines {
+		for _, token := range patterns.SingleLineTokens {
+			if strings.Contains(line, token) {
+				// Extract comment content after the token
+				parts := strings.Split(line, token)
+				if len(parts) >= 2 {
+					commentContent := strings.Join(parts[1:], token)
+					if strings.Contains(strings.ToLower(commentContent), "no_clawde") {
+						log.Printf("Found NO_CLAWDE opt-out marker in file, skipping comment processing")
+						return true
+					}
+				}
+			}
+		}
+	}
+
+	// Check multiline comments for NO_CLAWDE
+	for _, pair := range patterns.Multiline {
+		inComment := false
+		var commentLines []string
+
+		for _, line := range lines {
+			if !inComment && pair.Start.MatchString(line) {
+				inComment = true
+				commentLines = []string{line}
+				
+				// Check if end pattern is also on the same line (single-line multiline comment)
+				if pair.End.MatchString(line) {
+					// Process the comment immediately
+					fullComment := strings.Join(commentLines, "\n")
+					if strings.Contains(strings.ToLower(fullComment), "no_clawde") {
+						log.Printf("Found NO_CLAWDE opt-out marker in file, skipping comment processing")
+						return true
+					}
+					inComment = false
+					commentLines = nil
+				}
+				continue
+			}
+
+			if inComment {
+				commentLines = append(commentLines, line)
+				if pair.End.MatchString(line) {
+					// Check the complete multiline comment
+					fullComment := strings.Join(commentLines, "\n")
+					if strings.Contains(strings.ToLower(fullComment), "no_clawde") {
+						log.Printf("Found NO_CLAWDE opt-out marker in file, skipping comment processing")
+						return true
+					}
+					inComment = false
+					commentLines = nil
+				}
+			}
+		}
+	}
+
+	return false
+}
+
 // ExtractAIComments scans a file for AI-related comments
 func ExtractAIComments(filePath string) ([]AIComment, error) {
 	// Get file extension to determine comment patterns
@@ -125,6 +197,11 @@ func ExtractAIComments(filePath string) ([]AIComment, error) {
 	content, err := os.ReadFile(filePath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read file %s: %w", filePath, err)
+	}
+
+	// Check if file has opted out of comment detection
+	if checkForOptOut(string(content), ext) {
+		return nil, nil
 	}
 
 	lines := strings.Split(string(content), "\n")

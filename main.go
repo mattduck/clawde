@@ -16,6 +16,8 @@ import (
 	"golang.org/x/term"
 )
 
+// NO_CLAWDE - This file is part of the CLI wrapper and should be excluded from comment detection
+
 // TODO: these were to try to reduce flicker, not sure if it actually
 // helps. might want to ignore.
 

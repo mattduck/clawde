@@ -7,6 +7,8 @@ import (
 	"testing"
 )
 
+// NO_CLAWDE - This test file contains AI marker examples and should be excluded from comment detection
+
 // extractAICommentsFromString parses AI comments from string content instead of file
 func extractAICommentsFromString(content, filePath string) ([]AIComment, error) {
 	// Get file extension to determine comment patterns
