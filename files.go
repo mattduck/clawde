@@ -246,6 +246,7 @@ func FindFilesWithAIComments(rootDir string) ([]string, error) {
 	var files []string
 	var mutex sync.Mutex
 	var wg sync.WaitGroup
+	var fileCount int
 
 	log.Printf("Starting search for files with AI comments in directory: %s", rootDir)
 
@@ -257,9 +258,15 @@ func FindFilesWithAIComments(rootDir string) ([]string, error) {
 
 		// Only process files (not directories)
 		if !info.IsDir() {
-			// Check if file has a supported extension
+			// Check if file has a supported extension first
 			ext := filepath.Ext(path)
 			if _, exists := commentPatterns[ext]; exists {
+				// Check file count limit for supported files only
+				fileCount++
+				if fileCount > maxFilesToSearch {
+					log.Printf("Stopping file search: reached limit of %d files", maxFilesToSearch)
+					return filepath.SkipAll
+				}
 				// Skip ignored directories
 				if shouldIgnoreDirectory(filepath.Dir(path)) {
 					return nil
@@ -297,6 +304,17 @@ func FindFilesWithAIComments(rootDir string) ([]string, error) {
 
 // hasAIComments quickly checks if a file contains AI-related comments
 func hasAIComments(filePath string) bool {
+	// Check file size before reading
+	fileInfo, err := os.Stat(filePath)
+	if err != nil {
+		log.Printf("WARNING: Failed to stat file %s: %v", filePath, err)
+		return false
+	}
+	if fileInfo.Size() > maxFileSize {
+		log.Printf("Skipping file %s: size %d bytes exceeds limit %d bytes", filePath, fileInfo.Size(), maxFileSize)
+		return false
+	}
+
 	// Read file contents
 	content, err := os.ReadFile(filePath)
 	if err != nil {

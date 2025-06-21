@@ -102,8 +102,14 @@ var commentPatterns = map[string]CommentPattern{
 // Cache for processed comments to avoid reprocessing
 var processedComments = make(map[string]bool)
 
-// Maximum comment content length before truncation
-const maxCommentLength = 1000
+// Size limits to prevent performance issues with large files/lines
+const (
+	maxFileSize       = 10 * 1024 * 1024 // 10MB - skip files larger than this
+	maxLineLength     = 10 * 1024        // 10KB - skip lines longer than this
+	maxTotalLines     = 50000            // Skip files with more lines than this
+	maxFilesToSearch  = 10000            // Stop searching after this many files
+	maxCommentLength  = 1000             // Maximum comment content length before truncation
+)
 
 // truncateComment truncates comment content if it exceeds maxCommentLength
 func truncateComment(content string) string {
@@ -193,6 +199,16 @@ func ExtractAIComments(filePath string) ([]AIComment, error) {
 		return nil, nil
 	}
 
+	// Check file size before reading
+	fileInfo, err := os.Stat(filePath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to stat file %s: %w", filePath, err)
+	}
+	if fileInfo.Size() > maxFileSize {
+		log.Printf("Skipping file %s: size %d bytes exceeds limit %d bytes", filePath, fileInfo.Size(), maxFileSize)
+		return nil, nil
+	}
+
 	// Read file contents
 	content, err := os.ReadFile(filePath)
 	if err != nil {
@@ -205,6 +221,13 @@ func ExtractAIComments(filePath string) ([]AIComment, error) {
 	}
 
 	lines := strings.Split(string(content), "\n")
+	
+	// Check total line count
+	if len(lines) > maxTotalLines {
+		log.Printf("Skipping file %s: %d lines exceeds limit %d lines", filePath, len(lines), maxTotalLines)
+		return nil, nil
+	}
+	
 	var comments []AIComment
 
 	// Check single-line comments
@@ -243,6 +266,12 @@ func extractSingleLineComments(filePath string, lines []string, pattern *regexp.
 	for i, line := range lines {
 		if processedLines[i] {
 			continue // Skip lines already processed as part of a comment block
+		}
+
+		// Check line length
+		if len(line) > maxLineLength {
+			log.Printf("Skipping line %d in %s: length %d exceeds limit %d", i+1, filePath, len(line), maxLineLength)
+			continue
 		}
 
 		// Check if this line contains a comment at all
@@ -370,6 +399,12 @@ func extractMultilineComments(filePath string, lines []string, pair MultilineCom
 	var startLine int
 
 	for i, line := range lines {
+		// Check line length
+		if len(line) > maxLineLength {
+			log.Printf("Skipping line %d in %s: length %d exceeds limit %d", i+1, filePath, len(line), maxLineLength)
+			continue
+		}
+
 		if !inComment && pair.Start.MatchString(line) {
 			inComment = true
 			startLine = i
