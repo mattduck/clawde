@@ -675,6 +675,21 @@ func main() {}`,
 			wantType: "!",
 		},
 		{
+			name: "consecutive comments with AI marker on first line",
+			content: `package main
+
+// blah AI?
+// continues here
+// and here too
+
+func main() {}`,
+			expected: 1,
+			wantStartLine: 3,
+			wantEndLine: 5,
+			wantContent: "blah AI? continues here and here too",
+			wantType: "?",
+		},
+		{
 			name: "mixed inline and whole-line comments - should not group",
 			content: `package main
 

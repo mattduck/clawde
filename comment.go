@@ -213,22 +213,12 @@ func extractSingleLineComments(filePath string, lines []string, pattern *regexp.
 			}
 			combinedContent := truncateComment(strings.Join(allContent, " "))
 
-			// Check if the combined content has AI markers
+			// Check if any line in the comment block has AI markers
 			// Priority: AI! and AI? take precedence over AI:
 			// AI: is only supported at the start, not at the end
-			var actionType string
-			lowerContent := strings.ToLower(combinedContent)
-
-			// Check for AI! first (highest priority) - can be at start or end
-			if strings.HasSuffix(lowerContent, " ai!") || lowerContent == "ai!" || strings.HasPrefix(lowerContent, "ai!") {
-				actionType = "!"
-			} else if strings.HasSuffix(lowerContent, " ai?") || lowerContent == "ai?" || strings.HasPrefix(lowerContent, "ai?") {
-				actionType = "?"
-			} else if strings.HasPrefix(lowerContent, "ai:") {
-				// AI only supported at start
-				actionType = ":"
-			} else {
-				// AI marker is in the middle or not present - skip this comment
+			actionType := checkAIMarkerInLines(allContent)
+			if actionType == "" {
+				// No AI marker found in any line - skip this comment
 				continue
 			}
 
@@ -265,21 +255,9 @@ func extractSingleLineComments(filePath string, lines []string, pattern *regexp.
 				commentContent := truncateComment(strings.TrimSpace(strings.Join(parts[1:], commentPrefix)))
 
 				// Check if it contains AI markers
-				// Priority: AI! and AI? take precedence over AI:
-				// AI is only supported at the start, not at the end
-				var actionType string
-				lowerContent := strings.ToLower(commentContent)
-
-				// Check for AI! first (highest priority) - can be at start or end
-				if strings.HasSuffix(lowerContent, " ai!") || lowerContent == "ai!" || strings.HasPrefix(lowerContent, "ai!") {
-					actionType = "!"
-				} else if strings.HasSuffix(lowerContent, " ai?") || lowerContent == "ai?" || strings.HasPrefix(lowerContent, "ai?") {
-					actionType = "?"
-				} else if strings.HasPrefix(lowerContent, "ai:") {
-					// AI only supported at start
-					actionType = ":"
-				} else {
-					// AI marker is in the middle or not present - skip this comment
+				actionType := checkAIMarkerInLines([]string{commentContent})
+				if actionType == "" {
+					// No AI marker found - skip this comment
 					continue
 				}
 
@@ -593,4 +571,38 @@ func markCommentProcessed(comment AIComment) {
 // clearProcessedCache clears the processed comments cache
 func clearProcessedCache() {
 	processedComments = make(map[string]bool)
+}
+
+// checkAIMarkerInLines checks if any line in a slice of lines contains AI markers
+// Returns the action type ("!", "?", ":") or empty string if no marker found
+// Returns the first non-colon marker found, or ":" if only colon markers exist
+func checkAIMarkerInLines(lines []string) string {
+	hasContext := false
+	
+	for _, line := range lines {
+		if line == "" {
+			continue
+		}
+
+		lowerLine := strings.ToLower(line)
+
+		// Check for ! or ? - return immediately if found (first non-colon marker wins)
+		if strings.HasSuffix(lowerLine, " ai!") || lowerLine == "ai!" || strings.HasPrefix(lowerLine, "ai!") {
+			return "!"
+		}
+		if strings.HasSuffix(lowerLine, " ai?") || lowerLine == "ai?" || strings.HasPrefix(lowerLine, "ai?") {
+			return "?"
+		}
+		// Remember if we saw a colon marker, but don't return it yet
+		if strings.HasPrefix(lowerLine, "ai:") {
+			hasContext = true
+		}
+	}
+
+	// Only return ":" if we found colon markers but no ! or ? markers
+	if hasContext {
+		return ":"
+	}
+
+	return ""
 }
