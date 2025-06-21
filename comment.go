@@ -403,14 +403,14 @@ func hasContentBetweenMarkers(line string, pair MultilineCommentPair) bool {
 		matches := pair.Start.FindAllStringIndex(line, -1)
 		if len(matches) >= 2 {
 			// Check if there's non-whitespace content between first and last match
-			start := matches[0][1]                    // End of first marker
-			end := matches[len(matches)-1][0]        // Start of last marker
+			start := matches[0][1]            // End of first marker
+			end := matches[len(matches)-1][0] // Start of last marker
 			between := strings.TrimSpace(line[start:end])
 			return between != ""
 		}
 		return false
 	}
-	
+
 	// For asymmetric markers (like /* */), check if there's content between them
 	startLoc := pair.Start.FindStringIndex(line)
 	endLoc := pair.End.FindStringIndex(line)
@@ -418,7 +418,7 @@ func hasContentBetweenMarkers(line string, pair MultilineCommentPair) bool {
 		between := strings.TrimSpace(line[startLoc[1]:endLoc[0]])
 		return between != ""
 	}
-	
+
 	return false
 }
 
@@ -526,7 +526,7 @@ func extractContextLines(lines []string, targetLine, contextSize int) []string {
 // extractMultilineContentLines removes comment markers and returns individual lines
 func extractMultilineContentLines(fullComment string, ext string) []string {
 	content := fullComment
-	
+
 	// Get tokens for this file extension
 	if ext != "" {
 		if patterns, exists := commentPatterns[ext]; exists {

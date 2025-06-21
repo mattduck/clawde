@@ -124,7 +124,7 @@ func (w *CLIWrapper) SendCommand(command string) error {
 }
 
 // renderCommentPrompt creates a prompt for AI question comments
-func renderCommentPrompt(comment AIComment) string {
+func renderCommentPrompt(comment AIComment, contextComments []AIComment) string {
 	var locationStr string
 	if comment.EndLine == 0 || comment.EndLine == comment.LineNumber {
 		// Single-line comment
@@ -134,25 +134,44 @@ func renderCommentPrompt(comment AIComment) string {
 		locationStr = fmt.Sprintf("at lines %d-%d", comment.LineNumber, comment.EndLine)
 	}
 
+	var prompt string
 	switch comment.ActionType {
 	case "!":
-		return fmt.Sprintf("See %s %s and surrounding context. Make the appropriate changes. Replace the AI! marker with [ai] when done.",
+		prompt = fmt.Sprintf("See %s %s and surrounding context. Make the appropriate changes. YOU MUST replace the AI! marker with [ai] when done.",
 			comment.FilePath, locationStr)
 	case "?":
-		return fmt.Sprintf("See %s %s and surrounding context. Answer the question(s). DO NOT MAKE CHANGES. Replace the AI? marker with [ai] when done.",
+		prompt = fmt.Sprintf("See %s %s and surrounding context. Answer the question(s), but DO NOT MAKE CHANGES. Replace the AI? marker with [ai] when done.",
 			comment.FilePath, locationStr)
 	case ":":
-		return fmt.Sprintf("Extra from code comment at %s %s",
+		prompt = fmt.Sprintf("Extra from code comment at %s %s",
 			comment.FilePath, locationStr)
 	default:
 		// TODO: should never happen, log?
-		return fmt.Sprintf("See %s %s and surrounding context.",
+		prompt = fmt.Sprintf("See %s %s and surrounding context.",
 			comment.FilePath, locationStr)
 	}
+
+	// Add context comments if present
+	if len(contextComments) > 0 {
+		prompt += "\n\nRelated context:\n"
+		for _, ctx := range contextComments {
+			var ctxLocationStr string
+			if ctx.EndLine == 0 || ctx.EndLine == ctx.LineNumber {
+				ctxLocationStr = fmt.Sprintf("- line %d", ctx.LineNumber)
+			} else {
+				ctxLocationStr = fmt.Sprintf("- lines %d-%d", ctx.LineNumber, ctx.EndLine)
+			}
+			prompt += fmt.Sprintf("\n%s at %s:\n  %s\n", ctx.FilePath, ctxLocationStr, ctx.Content)
+		}
+	}
+
+	return prompt
 }
 
+// TODO: refactor this so that we use the logic from the single one, but it becomes one function
+//
 // renderMultipleCommentsPrompt creates a prompt for multiple AI comments (file watcher only)
-func renderMultipleCommentsPrompt(comments []AIComment) string {
+func renderMultipleCommentsPrompt(comments []AIComment, contextComments []AIComment) string {
 	// File watcher only processes ? and ! comments, so we don't need to separate by type
 	// Determine action type based on precedence (! takes precedence over ?)
 	hasAction := false
@@ -180,6 +199,20 @@ func renderMultipleCommentsPrompt(comments []AIComment) string {
 		}
 
 		prompt.WriteString(fmt.Sprintf("• %s at %s\n", comment.FilePath, locationStr))
+	}
+
+	// Add context comments if present
+	if len(contextComments) > 0 {
+		prompt.WriteString("\nAdditional context:\n")
+		for _, ctx := range contextComments {
+			var ctxLocationStr string
+			if ctx.EndLine == 0 || ctx.EndLine == ctx.LineNumber {
+				ctxLocationStr = fmt.Sprintf("line %d", ctx.LineNumber)
+			} else {
+				ctxLocationStr = fmt.Sprintf("lines %d-%d", ctx.LineNumber, ctx.EndLine)
+			}
+			prompt.WriteString(fmt.Sprintf("\n%s at %s:\n%s", ctx.FilePath, ctxLocationStr, ctx.Content))
+		}
 	}
 
 	return prompt.String()
@@ -416,13 +449,16 @@ func handleFileChange(filePath string, wrapper *CLIWrapper) {
 
 	// Process all unprocessed comments together
 	if len(unprocessedComments) > 0 {
+		// Collect all context comments from the codebase
+		contextComments := collectAllContextComments(".")
+
 		var prompt string
 		if len(unprocessedComments) == 1 {
 			// Single comment - use existing template
-			prompt = renderCommentPrompt(unprocessedComments[0])
+			prompt = renderCommentPrompt(unprocessedComments[0], contextComments)
 		} else {
 			// Multiple comments - use new template
-			prompt = renderMultipleCommentsPrompt(unprocessedComments)
+			prompt = renderMultipleCommentsPrompt(unprocessedComments, contextComments)
 		}
 
 		log.Printf("Sending prompt to underlying program: %s", prompt)
@@ -440,6 +476,44 @@ func handleFileChange(filePath string, wrapper *CLIWrapper) {
 	}
 
 	log.Printf("=== END AI COMMENTS ===")
+}
+
+// collectAllContextComments finds all : (context) comments in the codebase
+func collectAllContextComments(rootDir string) []AIComment {
+	log.Printf("Collecting all context comments from %s", rootDir)
+
+	// Find all files with AI comments
+	files, err := FindFilesWithAIComments(rootDir)
+	if err != nil {
+		log.Printf("ERROR: Failed to search for AI comments: %v", err)
+		return nil
+	}
+
+	if len(files) == 0 {
+		log.Printf("No files with AI comments found")
+		return nil
+	}
+
+	var contextComments []AIComment
+
+	for _, filePath := range files {
+		// Extract AI comments from the file
+		comments, err := ExtractAIComments(filePath)
+		if err != nil {
+			log.Printf("ERROR: Failed to extract AI comments from %s: %v", filePath, err)
+			continue
+		}
+
+		for _, comment := range comments {
+			// Only collect : comments (context)
+			if comment.ActionType == ":" {
+				contextComments = append(contextComments, comment)
+			}
+		}
+	}
+
+	log.Printf("Found %d context comments", len(contextComments))
+	return contextComments
 }
 
 // triggerAICommentSearch manually searches for files with AI comments and processes them
