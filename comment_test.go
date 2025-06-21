@@ -563,7 +563,7 @@ func TestRenderCommentPrompt(t *testing.T) {
 				LineNumber: 5,
 				ActionType: "?",
 			},
-			expected: "See test.go at line 5 and surrounding context. Summarise the question and answer it. DO NOT MAKE CHANGES.",
+			expected: "See test.go at line 5 and surrounding context. Answer the question(s). DO NOT MAKE CHANGES. Replace the AI? marker with [ai] when done.",
 		},
 		{
 			name: "single line command",
@@ -572,7 +572,7 @@ func TestRenderCommentPrompt(t *testing.T) {
 				LineNumber: 10,
 				ActionType: "!",
 			},
-			expected: "See test.go at line 10 and surrounding context. Summarise the ask, and make the appropriate changes",
+			expected: "See test.go at line 10 and surrounding context. Make the appropriate changes. Replace the AI! marker with [ai] when done.",
 		},
 		{
 			name: "multiline question - should show range",
@@ -582,7 +582,7 @@ func TestRenderCommentPrompt(t *testing.T) {
 				EndLine:    17, // This field doesn't exist yet
 				ActionType: "?",
 			},
-			expected: "See test.go at lines 15-17 and surrounding context. Summarise the question and answer it. DO NOT MAKE CHANGES.",
+			expected: "See test.go at lines 15-17 and surrounding context. Answer the question(s). DO NOT MAKE CHANGES. Replace the AI? marker with [ai] when done.",
 		},
 	}
 
@@ -628,7 +628,7 @@ func main() {
 
 	// Test the rendered prompt
 	prompt := renderCommentPrompt(comment)
-	expected := "See test.go at lines 3-7 and surrounding context. Summarise the question and answer it. DO NOT MAKE CHANGES."
+	expected := "See test.go at lines 3-7 and surrounding context. Answer the question(s). DO NOT MAKE CHANGES. Replace the AI? marker with [ai] when done."
 	if prompt != expected {
 		t.Errorf("renderCommentPrompt() = %q, want %q", prompt, expected)
 	}
@@ -759,9 +759,9 @@ func main() {}`,
 				// Test the rendered prompt for multi-line blocks
 				if comment.EndLine > 0 {
 					prompt := renderCommentPrompt(comment)
-					expectedPrompt := fmt.Sprintf("See test.go at lines %d-%d and surrounding context. Summarise the question and answer it. DO NOT MAKE CHANGES.", comment.LineNumber, comment.EndLine)
+					expectedPrompt := fmt.Sprintf("See test.go at lines %d-%d and surrounding context. Answer the question(s). DO NOT MAKE CHANGES. Replace the AI? marker with [ai] when done.", comment.LineNumber, comment.EndLine)
 					if tt.wantType == "!" {
-						expectedPrompt = fmt.Sprintf("See test.go at lines %d-%d and surrounding context. Summarise the ask, and make the appropriate changes", comment.LineNumber, comment.EndLine)
+						expectedPrompt = fmt.Sprintf("See test.go at lines %d-%d and surrounding context. Make the appropriate changes. Replace the AI! marker with [ai] when done.", comment.LineNumber, comment.EndLine)
 					}
 					if prompt != expectedPrompt {
 						t.Errorf("renderCommentPrompt() = %q, want %q", prompt, expectedPrompt)
