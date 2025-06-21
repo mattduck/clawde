@@ -410,7 +410,8 @@ func hasValidAIMarker(fullComment string, ext string) bool {
 			continue
 		}
 
-		lowerLine := strings.ToLower(line)
+		// Trim trailing space for consistent marker detection
+		lowerLine := strings.ToLower(strings.TrimSpace(line))
 
 		// Check if AI? or AI! is at the end of the line
 		if strings.HasSuffix(lowerLine, " ai?") || lowerLine == "ai?" ||
@@ -446,7 +447,8 @@ func determineActionType(fullComment string, ext string) string {
 			continue
 		}
 
-		lowerLine := strings.ToLower(line)
+		// Trim trailing space for consistent marker detection
+		lowerLine := strings.ToLower(strings.TrimSpace(line))
 
 		// Check for ! (highest priority)
 		if strings.HasSuffix(lowerLine, " ai!") || lowerLine == "ai!" || strings.HasPrefix(lowerLine, "ai!") {
@@ -533,6 +535,11 @@ func extractMultilineContentLines(fullComment string, ext string) []string {
 		cleaned = strings.TrimPrefix(cleaned, "*")
 		cleaned = strings.TrimSpace(cleaned)
 		if cleaned != "" {
+			// Ensure proper spacing between lines by adding a space at the end
+			// if the line doesn't already end with whitespace
+			if !strings.HasSuffix(cleaned, " ") {
+				cleaned += " "
+			}
 			cleanLines = append(cleanLines, cleaned)
 		}
 	}
@@ -543,7 +550,10 @@ func extractMultilineContentLines(fullComment string, ext string) []string {
 // extractMultilineContentForExt removes comment markers using language-specific tokens
 func extractMultilineContentForExt(fullComment string, ext string) string {
 	cleanLines := extractMultilineContentLines(fullComment, ext)
-	return strings.Join(cleanLines, " ")
+	// Join without additional spaces since each line already has proper spacing
+	joined := strings.Join(cleanLines, "")
+	// Trim any trailing space that might have been added to the last line
+	return strings.TrimSpace(joined)
 }
 
 // extractMultilineContent removes comment markers from multiline comment content
