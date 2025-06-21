@@ -1,4 +1,4 @@
-module cli-wrapper
+module clawde
 
 go 1.21
 
