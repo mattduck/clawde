@@ -1108,6 +1108,15 @@ func test() {}`,
 			wantContents: []string{"AI: This block needs review Consider performance optimization and error handling AI!"},
 		},
 		{
+			name: "Consecutive comments: AI: first line, AI! on middle line",
+			content: `// AI: some context
+// Fix this please AI!
+// More details here`,
+			expected: 1,
+			wantTypes: []string{"!"},
+			wantContents: []string{"AI: some context Fix this please AI! More details here"},
+		},
+		{
 			name: "Multiline block comment with mixed markers",
 			content: `/*
  * AI: Check this implementation
