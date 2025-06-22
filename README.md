@@ -10,7 +10,7 @@ modifies stdin to give me some UX improvements.
 - install: `go install github.com/mattduck/clawde@latest`
 
 - run: `clawde`. Arguments are directly passed through to `claude`, which must
-  be on your $PATH. Usage the same as `claude`, but with the features mentioned
+  be on your $PATH. Usage is the same as `claude`, but with the features mentioned
   below.
 
 ## Features
@@ -73,16 +73,16 @@ Examples:
 ```
 
 Additionally, you can use `Ctrl+/` to manually find all `AI:` comments and copy
-them into the prompt, but NOT submit them. This allows you quickly reference
+them into the prompt, but NOT submit them. This allows you to quickly reference
 locations without having to tell claude where to find each item.
 
-If you're in a git repo, git ignore rules are adhered -- ignored files won't be
+If you're in a git repo, gitignore rules are followed -- ignored files won't be
 processed for comments.
 
 ## Notes
 
 - Obviously wrapping the shell is brittle and the features would be better built
-  in direct. It was mostly just an experiment in using claude to generate a tool
+  in direct. This was mostly an experiment in using claude to generate a tool
   from scratch.
 
-- Subject to change design to whatever I find useful.
+- Features subject to change to whatever I find useful.
