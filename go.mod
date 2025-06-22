@@ -1,4 +1,4 @@
-module clawde
+module github.com/mattduck/clawde
 
 go 1.21
 
