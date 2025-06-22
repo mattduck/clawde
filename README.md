@@ -85,4 +85,6 @@ processed for comments.
   in direct. This was mostly an experiment in using claude to generate a tool
   from scratch.
 
+- Only tested on macOS using iterm2, YMMV on other platforms.
+
 - Features subject to change to whatever I find useful.
