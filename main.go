@@ -484,8 +484,11 @@ func handleFileChange(filePath string, wrapper *CLIWrapper) {
 func collectAllContextComments(rootDir string) []AIComment {
 	log.Printf("Collecting all context comments from %s", rootDir)
 
+	// Create git ignore cache for this search
+	gitIgnore := NewGitIgnoreCache(rootDir)
+
 	// Find all files with AI comments
-	files, err := FindFilesWithAIComments(rootDir)
+	files, err := FindFilesWithAIComments(rootDir, gitIgnore)
 	if err != nil {
 		log.Printf("ERROR: Failed to search for AI comments: %v", err)
 		return nil
@@ -522,8 +525,11 @@ func collectAllContextComments(rootDir string) []AIComment {
 func triggerAICommentSearch(rootDir string, wrapper *CLIWrapper) {
 	log.Printf("=== MANUAL AI COMMENT SEARCH TRIGGERED ===")
 
+	// Create git ignore cache for this search
+	gitIgnore := NewGitIgnoreCache(rootDir)
+
 	// Find all files with AI comments
-	files, err := FindFilesWithAIComments(rootDir)
+	files, err := FindFilesWithAIComments(rootDir, gitIgnore)
 	if err != nil {
 		log.Printf("ERROR: Failed to search for AI comments: %v", err)
 		return

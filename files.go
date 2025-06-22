@@ -1,9 +1,11 @@
 package main
 
 import (
+	"bytes"
 	"fmt"
 	"log"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -11,11 +13,112 @@ import (
 	"github.com/fsnotify/fsnotify"
 )
 
+// GitIgnoreCache stores git-ignored files for fast lookup
+type GitIgnoreCache struct {
+	ignoredFiles map[string]bool
+	isGitRepo    bool
+	mu           sync.RWMutex
+}
+
+// NewGitIgnoreCache creates a new GitIgnoreCache and populates it
+func NewGitIgnoreCache(watchDir string) *GitIgnoreCache {
+	cache := &GitIgnoreCache{
+		ignoredFiles: make(map[string]bool),
+		isGitRepo:    false,
+	}
+
+	// Check if we're in a git repository
+	gitDir := filepath.Join(watchDir, ".git")
+	if info, err := os.Stat(gitDir); err == nil && info.IsDir() {
+		cache.isGitRepo = true
+		log.Printf("Git repository detected at: %s", watchDir)
+		cache.loadGitIgnoredFiles(watchDir)
+	} else {
+		log.Printf("Not a git repository or .git not found in: %s", watchDir)
+	}
+
+	return cache
+}
+
+// loadGitIgnoredFiles runs git ls-files to get ignored files
+func (g *GitIgnoreCache) loadGitIgnoredFiles(watchDir string) {
+	// First, find the git repository root
+	cmd := exec.Command("git", "rev-parse", "--show-toplevel")
+	cmd.Dir = watchDir
+	
+	var rootOut bytes.Buffer
+	cmd.Stdout = &rootOut
+	
+	err := cmd.Run()
+	if err != nil {
+		log.Printf("WARNING: Failed to find git root: %v", err)
+		return
+	}
+	
+	gitRoot := strings.TrimSpace(rootOut.String())
+	log.Printf("Git repository root: %s", gitRoot)
+	
+	// Now get the list of ignored files from the git root
+	cmd = exec.Command("git", "ls-files", "--ignored", "--exclude-standard", "--others")
+	cmd.Dir = gitRoot
+	
+	var out bytes.Buffer
+	cmd.Stdout = &out
+	
+	err = cmd.Run()
+	if err != nil {
+		log.Printf("WARNING: Failed to run git ls-files: %v", err)
+		return
+	}
+	
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	
+	// Parse the output and store in map
+	lines := strings.Split(strings.TrimSpace(out.String()), "\n")
+	for _, line := range lines {
+		if line != "" {
+			// Git ls-files returns paths relative to git root
+			// Convert to absolute path by joining with git root
+			absPath := filepath.Join(gitRoot, line)
+			g.ignoredFiles[absPath] = true
+		}
+	}
+	
+	log.Printf("Loaded %d git-ignored files into cache", len(g.ignoredFiles))
+}
+
+// IsIgnored checks if a path is git-ignored
+func (g *GitIgnoreCache) IsIgnored(path string) bool {
+	g.mu.RLock()
+	defer g.mu.RUnlock()
+	
+	// Check exact path match
+	if g.ignoredFiles[path] {
+		return true
+	}
+	
+	// Check if any parent directory is ignored
+	dir := path
+	for {
+		dir = filepath.Dir(dir)
+		if dir == "." || dir == "/" {
+			break
+		}
+		if g.ignoredFiles[dir] {
+			return true
+		}
+	}
+	
+	return false
+}
+
 // FileWatcher manages file system monitoring
 type FileWatcher struct {
 	watcher      *fsnotify.Watcher
 	watchDir     string
 	onFileChange func(string) // Callback for file changes
+	gitIgnore    *GitIgnoreCache
 }
 
 // NewFileWatcher creates a new file watcher
@@ -32,10 +135,14 @@ func NewFileWatcher(watchDir string, onFileChange func(string)) (*FileWatcher, e
 		return nil, fmt.Errorf("failed to create file watcher: %w", err)
 	}
 
+	// Initialize git ignore cache
+	gitIgnore := NewGitIgnoreCache(watchDir)
+
 	fw := &FileWatcher{
 		watcher:      watcher,
 		watchDir:     watchDir,
 		onFileChange: onFileChange,
+		gitIgnore:    gitIgnore,
 	}
 
 	log.Printf("File watcher created successfully for directory: %s", watchDir)
@@ -116,7 +223,7 @@ func (fw *FileWatcher) processEvents() {
 			// Handle directory creation events - add new directories to watcher
 			if event.Op&fsnotify.Create == fsnotify.Create {
 				if info, err := os.Stat(event.Name); err == nil && info.IsDir() {
-					if shouldIgnoreDirectory(event.Name) {
+					if fw.shouldIgnoreDirectory(event.Name) {
 						log.Printf("Ignoring creation of ignored directory: %s", event.Name)
 					} else {
 						log.Printf("New directory created: %s", event.Name)
@@ -133,8 +240,10 @@ func (fw *FileWatcher) processEvents() {
 			// Many editors use atomic replacement (create temp file, rename) instead of direct writes
 			if event.Op&fsnotify.Write == fsnotify.Write || event.Op&fsnotify.Create == fsnotify.Create {
 				// Skip files in ignored directories
-				if shouldIgnoreDirectory(filepath.Dir(event.Name)) {
+				if fw.shouldIgnoreDirectory(filepath.Dir(event.Name)) {
 					log.Printf("Ignoring file in ignored directory: %s", event.Name)
+				} else if fw.gitIgnore != nil && fw.gitIgnore.isGitRepo && fw.gitIgnore.IsIgnored(event.Name) {
+					log.Printf("Ignoring git-ignored file: %s", event.Name)
 				} else {
 					ext := filepath.Ext(event.Name)
 					log.Printf("File extension detected: %s for file %s", ext, event.Name)
@@ -176,12 +285,23 @@ func (fw *FileWatcher) processEvents() {
 }
 
 // shouldIgnoreDirectory checks if a directory should be ignored
-func shouldIgnoreDirectory(dirPath string) bool {
+func (fw *FileWatcher) shouldIgnoreDirectory(dirPath string) bool {
+	// First check git ignore cache if available
+	if fw.gitIgnore != nil && fw.gitIgnore.isGitRepo {
+		if fw.gitIgnore.IsIgnored(dirPath) {
+			return true
+		}
+	}
+	
 	dirName := filepath.Base(dirPath)
+
+	// Always ignore .git directory
+	if dirName == ".git" {
+		return true
+	}
 
 	// Common directories to ignore
 	ignoredDirs := []string{
-		".git",
 		".svn",
 		".hg",
 		"node_modules",
@@ -222,7 +342,7 @@ func (fw *FileWatcher) addDirectoriesRecursively(rootDir string) error {
 		// Only add directories to the watcher
 		if info.IsDir() {
 			// Skip ignored directories
-			if shouldIgnoreDirectory(path) {
+			if fw.shouldIgnoreDirectory(path) {
 				log.Printf("Skipping ignored directory: %s", path)
 				return filepath.SkipDir // Don't recurse into this directory
 			}
@@ -242,7 +362,7 @@ func (fw *FileWatcher) addDirectoriesRecursively(rootDir string) error {
 // FindFilesWithAIComments searches for files containing AI-related comments.
 // this is a basic search to prune the potential files that we need to search in
 // more depth.
-func FindFilesWithAIComments(rootDir string) ([]string, error) {
+func FindFilesWithAIComments(rootDir string, gitIgnore *GitIgnoreCache) ([]string, error) {
 	var files []string
 	var mutex sync.Mutex
 	var wg sync.WaitGroup
@@ -267,9 +387,29 @@ func FindFilesWithAIComments(rootDir string) ([]string, error) {
 					log.Printf("Stopping file search: reached limit of %d files", maxFilesToSearch)
 					return filepath.SkipAll
 				}
-				// Skip ignored directories
-				if shouldIgnoreDirectory(filepath.Dir(path)) {
+				// Skip ignored directories and files
+				dirPath := filepath.Dir(path)
+				
+				// Check git ignore cache if available
+				if gitIgnore != nil && gitIgnore.isGitRepo {
+					// Check both the file and its directory
+					if gitIgnore.IsIgnored(path) || gitIgnore.IsIgnored(dirPath) {
+						return nil
+					}
+				}
+				
+				// Check standard ignore patterns
+				dirName := filepath.Base(dirPath)
+				if dirName == ".git" || strings.HasPrefix(dirName, ".") && dirName != "." {
 					return nil
+				}
+				
+				// Check common ignored directories
+				ignoredDirs := []string{"node_modules", "__pycache__", ".pytest_cache", "vendor", "build", "dist"}
+				for _, ignored := range ignoredDirs {
+					if dirName == ignored {
+						return nil
+					}
 				}
 
 				// Skip test files (contain false positives)
