@@ -5,7 +5,6 @@ package main
 import (
 	"crypto/sha256"
 	"fmt"
-	"log"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -138,7 +137,7 @@ func checkForOptOut(content string, ext string) bool {
 				if len(parts) >= 2 {
 					commentContent := strings.Join(parts[1:], token)
 					if strings.Contains(strings.ToLower(commentContent), "no_clawde") {
-						log.Printf("Found NO_CLAWDE opt-out marker in file, skipping comment processing")
+						logger.Debug("Found NO_CLAWDE opt-out marker in file, skipping comment processing")
 						return true
 					}
 				}
@@ -161,7 +160,7 @@ func checkForOptOut(content string, ext string) bool {
 					// Process the comment immediately
 					fullComment := strings.Join(commentLines, "\n")
 					if strings.Contains(strings.ToLower(fullComment), "no_clawde") {
-						log.Printf("Found NO_CLAWDE opt-out marker in file, skipping comment processing")
+						logger.Debug("Found NO_CLAWDE opt-out marker in file, skipping comment processing")
 						return true
 					}
 					inComment = false
@@ -176,7 +175,7 @@ func checkForOptOut(content string, ext string) bool {
 					// Check the complete multiline comment
 					fullComment := strings.Join(commentLines, "\n")
 					if strings.Contains(strings.ToLower(fullComment), "no_clawde") {
-						log.Printf("Found NO_CLAWDE opt-out marker in file, skipping comment processing")
+						logger.Debug("Found NO_CLAWDE opt-out marker in file, skipping comment processing")
 						return true
 					}
 					inComment = false
@@ -195,7 +194,7 @@ func ExtractAIComments(filePath string) ([]AIComment, error) {
 	ext := filepath.Ext(filePath)
 	patterns, exists := commentPatterns[ext]
 	if !exists {
-		log.Printf("No comment patterns defined for file extension: %s", ext)
+		logger.Debug("No comment patterns defined for file extension", "ext", ext)
 		return nil, nil
 	}
 
@@ -205,7 +204,7 @@ func ExtractAIComments(filePath string) ([]AIComment, error) {
 		return nil, fmt.Errorf("failed to stat file %s: %w", filePath, err)
 	}
 	if fileInfo.Size() > maxFileSize {
-		log.Printf("Skipping file %s: size %d bytes exceeds limit %d bytes", filePath, fileInfo.Size(), maxFileSize)
+		logger.Debug("Skipping file: size exceeds limit", "file", filePath, "size", fileInfo.Size(), "limit", maxFileSize)
 		return nil, nil
 	}
 
@@ -224,7 +223,7 @@ func ExtractAIComments(filePath string) ([]AIComment, error) {
 	
 	// Check total line count
 	if len(lines) > maxTotalLines {
-		log.Printf("Skipping file %s: %d lines exceeds limit %d lines", filePath, len(lines), maxTotalLines)
+		logger.Debug("Skipping file: lines exceed limit", "file", filePath, "lines", len(lines), "limit", maxTotalLines)
 		return nil, nil
 	}
 	
@@ -242,7 +241,7 @@ func ExtractAIComments(filePath string) ([]AIComment, error) {
 		comments = append(comments, foundComments...)
 	}
 
-	log.Printf("Found %d AI comments in %s", len(comments), filePath)
+	logger.Info("Found AI comments", "count", len(comments), "file", filePath)
 	return comments, nil
 }
 
@@ -270,7 +269,7 @@ func extractSingleLineComments(filePath string, lines []string, pattern *regexp.
 
 		// Check line length
 		if len(line) > maxLineLength {
-			log.Printf("Skipping line %d in %s: length %d exceeds limit %d", i+1, filePath, len(line), maxLineLength)
+			logger.Debug("Skipping line: length exceeds limit", "line", i+1, "file", filePath, "length", len(line), "limit", maxLineLength)
 			continue
 		}
 
@@ -350,9 +349,9 @@ func extractSingleLineComments(filePath string, lines []string, pattern *regexp.
 
 			comments = append(comments, comment)
 			if len(commentLines) == 1 {
-				log.Printf("Found single-line AI comment at %s:%d - %s", filePath, i+1, combinedContent)
+				logger.Debug("Found single-line AI comment", "file", filePath, "line", i+1, "content", combinedContent)
 			} else {
-				log.Printf("Found multi-line single-line AI comment block at %s:%d-%d - %s", filePath, i+1, endLine+1, combinedContent)
+				logger.Debug("Found multi-line single-line AI comment block", "file", filePath, "start", i+1, "end", endLine+1, "content", combinedContent)
 			}
 		} else {
 			// Handle inline comments individually (don't group them)
@@ -383,7 +382,7 @@ func extractSingleLineComments(filePath string, lines []string, pattern *regexp.
 				comment.ContextLines = extractContextLines(lines, i, 5)
 
 				comments = append(comments, comment)
-				log.Printf("Found inline AI comment at %s:%d - %s", filePath, i+1, commentContent)
+				logger.Debug("Found inline AI comment", "file", filePath, "line", i+1, "content", commentContent)
 			}
 		}
 	}
@@ -401,7 +400,7 @@ func extractMultilineComments(filePath string, lines []string, pair MultilineCom
 	for i, line := range lines {
 		// Check line length
 		if len(line) > maxLineLength {
-			log.Printf("Skipping line %d in %s: length %d exceeds limit %d", i+1, filePath, len(line), maxLineLength)
+			logger.Debug("Skipping line: length exceeds limit", "line", i+1, "file", filePath, "length", len(line), "limit", maxLineLength)
 			continue
 		}
 
@@ -437,7 +436,7 @@ func extractMultilineComments(filePath string, lines []string, pair MultilineCom
 					comment.ContextLines = extractContextLines(lines, startLine, 5)
 
 					comments = append(comments, comment)
-					log.Printf("Found multiline AI comment at %s:%d - %s", filePath, startLine+1, content)
+					logger.Debug("Found multiline AI comment", "file", filePath, "line", startLine+1, "content", content)
 				}
 
 				inComment = false
@@ -473,7 +472,7 @@ func extractMultilineComments(filePath string, lines []string, pair MultilineCom
 					comment.ContextLines = extractContextLines(lines, startLine, 5)
 
 					comments = append(comments, comment)
-					log.Printf("Found multiline AI comment at %s:%d - %s", filePath, startLine+1, content)
+					logger.Debug("Found multiline AI comment", "file", filePath, "line", startLine+1, "content", content)
 				}
 
 				inComment = false
@@ -588,7 +587,8 @@ func determineActionType(fullComment string, ext string) string {
 	}
 
 	// This should never happen if hasValidAIMarker returned true
-	log.Fatalf("Internal error: determineActionType called but no valid AI marker found in comment: %s", fullComment)
+	logger.Error("Internal error: determineActionType called but no valid AI marker found in comment", "comment", fullComment)
+	panic("Internal error: determineActionType called but no valid AI marker found")
 	return ""
 }
 

@@ -2,12 +2,24 @@ package main
 
 import (
 	"fmt"
+	"io"
+	"log/slog"
 	"path/filepath"
 	"strings"
 	"testing"
 )
 
 // NO_CLAWDE - This test file contains AI marker examples and should be excluded from comment detection
+
+// initTestLogger initializes the global logger for tests
+func initTestLogger() {
+	if logger == nil {
+		handler := slog.NewTextHandler(io.Discard, &slog.HandlerOptions{
+			Level: slog.LevelInfo,
+		})
+		logger = slog.New(handler)
+	}
+}
 
 // extractAICommentsFromString parses AI comments from string content instead of file
 func extractAICommentsFromString(content, filePath string) ([]AIComment, error) {
@@ -37,6 +49,7 @@ func extractAICommentsFromString(content, filePath string) ([]AIComment, error) 
 }
 
 func TestGoSingleLineComments(t *testing.T) {
+	initTestLogger()
 	tests := []struct {
 		name     string
 		content  string

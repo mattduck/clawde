@@ -10,6 +10,8 @@ type Config struct {
 	EnableOutputThrottling   bool
 	EnableInputThrottling    bool
 	EnableHeldEnterDetection bool
+	LogFile                  string
+	LogLevel                 string
 }
 
 // LoadConfig creates a new Config instance with values from environment variables
@@ -20,6 +22,8 @@ func LoadConfig() *Config {
 		EnableOutputThrottling:   true,
 		EnableInputThrottling:    true,
 		EnableHeldEnterDetection: false,
+		LogFile:                  "",
+		LogLevel:                 "info",
 	}
 
 	// Override with environment variables if set
@@ -33,6 +37,14 @@ func LoadConfig() *Config {
 
 	if val := os.Getenv("CLAWDE_HELD_ENTER_DETECTION"); val != "" {
 		cfg.EnableHeldEnterDetection = parseBool(val)
+	}
+
+	if val := os.Getenv("CLAWDE_LOG_FILE"); val != "" {
+		cfg.LogFile = val
+	}
+
+	if val := os.Getenv("CLAWDE_LOG_LEVEL"); val != "" {
+		cfg.LogLevel = val
 	}
 
 	return cfg

@@ -3,12 +3,21 @@ package main
 // NO_CLAWDE - This test file contains AI marker examples and should be excluded from comment detection
 
 import (
+	"io"
+	"log/slog"
 	"os"
 	"strings"
 	"testing"
 )
 
 func TestOptOutFunctionality(t *testing.T) {
+	// Initialize logger for tests
+	if logger == nil {
+		handler := slog.NewTextHandler(io.Discard, &slog.HandlerOptions{
+			Level: slog.LevelInfo,
+		})
+		logger = slog.New(handler)
+	}
 	tests := []struct {
 		name     string
 		content  string

@@ -2,6 +2,8 @@ package main
 
 import (
 	"fmt"
+	"io"
+	"log/slog"
 	"strings"
 	"testing"
 )
@@ -9,6 +11,13 @@ import (
 // NO_CLAWDE - This test file contains AI marker examples and should be excluded from comment detection
 
 func TestLongCommentsWithAIMarkers(t *testing.T) {
+	// Initialize logger for tests
+	if logger == nil {
+		handler := slog.NewTextHandler(io.Discard, &slog.HandlerOptions{
+			Level: slog.LevelInfo,
+		})
+		logger = slog.New(handler)
+	}
 	// Create a comment longer than maxCommentLength (1000 characters)
 	longPrefix := strings.Repeat("This is a very long comment that exceeds the maximum comment length. ", 15) // ~1050 characters
 	

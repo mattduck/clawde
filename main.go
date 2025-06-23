@@ -3,7 +3,7 @@ package main
 import (
 	"fmt"
 	"io"
-	"log"
+	"log/slog"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -19,6 +19,51 @@ import (
 const version = "v0.1.0"
 
 // NO_CLAWDE - This file is part of the CLI wrapper and should be excluded from comment detection
+
+// Global logger instance
+var logger *slog.Logger
+
+// initLogging initializes the logging system based on configuration
+func initLogging(config *Config) (*slog.Logger, *os.File, error) {
+	// Parse log level
+	var level slog.Level
+	switch strings.ToLower(config.LogLevel) {
+	case "debug":
+		level = slog.LevelDebug
+	case "info":
+		level = slog.LevelInfo
+	case "warn":
+		level = slog.LevelWarn
+	case "error":
+		level = slog.LevelError
+	default:
+		level = slog.LevelInfo
+	}
+
+	// If LogFile is empty, create logger that writes to io.Discard
+	if config.LogFile == "" {
+		handler := slog.NewTextHandler(io.Discard, &slog.HandlerOptions{
+			Level: level,
+		})
+		logger := slog.New(handler)
+		return logger, nil, nil
+	}
+
+	// Open log file
+	logFile, err := os.OpenFile(config.LogFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to open log file: %w", err)
+	}
+
+	// Create slog handler with the specified level
+	handler := slog.NewTextHandler(logFile, &slog.HandlerOptions{
+		Level: level,
+	})
+
+	// Create and return the logger
+	logger := slog.New(handler)
+	return logger, logFile, nil
+}
 
 type CLIWrapper struct {
 	cmd          *exec.Cmd
@@ -383,9 +428,9 @@ func (w *CLIWrapper) setupResizeHandler() {
 			if size, err := pty.GetsizeFull(os.Stdout); err == nil {
 				// Forward the new size to the wrapped program's PTY
 				pty.Setsize(w.ptmx, size)
-				log.Printf("Terminal resized to %dx%d", size.Cols, size.Rows)
+				logger.Info("Terminal resized", "cols", size.Cols, "rows", size.Rows)
 			} else {
-				log.Printf("Failed to get terminal size on resize: %v", err)
+				logger.Warn("Failed to get terminal size on resize", "error", err)
 			}
 		}
 	}()
@@ -393,51 +438,51 @@ func (w *CLIWrapper) setupResizeHandler() {
 
 // handleFileChange processes file changes and extracts AI comments
 func handleFileChange(filePath string, wrapper *CLIWrapper) {
-	log.Printf("Processing file change: %s", filePath)
+	logger.Info("Processing file change", "file", filePath)
 
 	// Extract AI comments from the changed file
 	comments, err := ExtractAIComments(filePath)
 	if err != nil {
-		log.Printf("ERROR: Failed to extract AI comments from %s: %v", filePath, err)
+		logger.Error("Failed to extract AI comments", "file", filePath, "error", err)
 		return
 	}
 
 	if len(comments) == 0 {
-		log.Printf("No AI comments found in %s", filePath)
+		logger.Info("No AI comments found", "file", filePath)
 		return
 	}
 
-	log.Printf("=== AI COMMENTS FOUND IN %s ===", filePath)
+	logger.Info("AI comments found", "file", filePath)
 
 	// Gather all unprocessed comments first
 	var unprocessedComments []AIComment
 	for i, comment := range comments {
-		log.Printf("Comment #%d:", i+1)
-		log.Printf("  FilePath: %s", comment.FilePath)
-		log.Printf("  LineNumber: %d", comment.LineNumber)
-		log.Printf("  Content: %s", comment.Content)
-		log.Printf("  ActionType: %s", comment.ActionType)
-		log.Printf("  Hash: %s", comment.Hash)
-		log.Printf("  FullLine: %s", comment.FullLine)
-		log.Printf("  Context (%d lines):", len(comment.ContextLines))
+		logger.Info("AI comment found",
+			"comment_number", i+1,
+			"file_path", comment.FilePath,
+			"line_number", comment.LineNumber,
+			"content", comment.Content,
+			"action_type", comment.ActionType,
+			"hash", comment.Hash,
+			"full_line", comment.FullLine,
+			"context_lines_count", len(comment.ContextLines))
 		for _, contextLine := range comment.ContextLines {
-			log.Printf("    %s", contextLine)
+			logger.Debug("Context line", "line", contextLine)
 		}
-		log.Printf("  ---")
 
 		// File watcher only processes ? and ! comments (quick actions)
 		if comment.ActionType == "?" || comment.ActionType == "!" {
 			if !isCommentProcessed(comment) {
-				log.Printf("Found new AI comment (%s): %s", comment.ActionType, comment.Hash)
+				logger.Info("Found new AI comment", "action_type", comment.ActionType, "hash", comment.Hash)
 				unprocessedComments = append(unprocessedComments, comment)
 			} else {
-				log.Printf("Skipping already processed AI comment: %s", comment.Hash)
+				logger.Debug("Skipping already processed AI comment", "hash", comment.Hash)
 			}
 		} else if comment.ActionType == ":" {
 			// AI comments are ignored by file watcher (manual invocation only)
-			log.Printf("Ignoring AI context comment (:) - use manual search to access: %s", comment.Hash)
+			logger.Debug("Ignoring AI context comment - use manual search to access", "hash", comment.Hash)
 		} else {
-			log.Printf("Skipping AI comment with unsupported action type: %s", comment.ActionType)
+			logger.Warn("Skipping AI comment with unsupported action type", "action_type", comment.ActionType)
 		}
 	}
 
@@ -455,26 +500,26 @@ func handleFileChange(filePath string, wrapper *CLIWrapper) {
 			prompt = renderMultipleCommentsPrompt(unprocessedComments, contextComments)
 		}
 
-		log.Printf("Sending prompt to underlying program: %s", prompt)
+		logger.Info("Sending prompt to underlying program", "prompt", prompt)
 
 		// Send the combined prompt to the wrapped program
 		if err := wrapper.SendCommand(prompt); err != nil {
-			log.Printf("ERROR: Failed to send prompt to wrapped program: %v", err)
+			logger.Error("Failed to send prompt to wrapped program", "error", err)
 		} else {
 			// Mark all processed comments as processed
 			for _, comment := range unprocessedComments {
 				markCommentProcessed(comment)
 			}
-			log.Printf("Successfully sent prompt and marked %d comments as processed", len(unprocessedComments))
+			logger.Info("Successfully sent prompt and marked comments as processed", "comment_count", len(unprocessedComments))
 		}
 	}
 
-	log.Printf("=== END AI COMMENTS ===")
+	logger.Debug("=== END AI COMMENTS ===\n")
 }
 
 // collectAllContextComments finds all : (context) comments in the codebase
 func collectAllContextComments(rootDir string) []AIComment {
-	log.Printf("Collecting all context comments from %s", rootDir)
+	logger.Debug("Collecting all context comments", "root_dir", rootDir)
 
 	// Create git ignore cache for this search
 	gitIgnore := NewGitIgnoreCache(rootDir)
@@ -482,12 +527,12 @@ func collectAllContextComments(rootDir string) []AIComment {
 	// Find all files with AI comments
 	files, err := FindFilesWithAIComments(rootDir, gitIgnore)
 	if err != nil {
-		log.Printf("ERROR: Failed to search for AI comments: %v", err)
+		logger.Error("Failed to search for AI comments", "error", err)
 		return nil
 	}
 
 	if len(files) == 0 {
-		log.Printf("No files with AI comments found")
+		logger.Debug("No files with AI comments found")
 		return nil
 	}
 
@@ -497,7 +542,7 @@ func collectAllContextComments(rootDir string) []AIComment {
 		// Extract AI comments from the file
 		comments, err := ExtractAIComments(filePath)
 		if err != nil {
-			log.Printf("ERROR: Failed to extract AI comments from %s: %v", filePath, err)
+			logger.Error("Failed to extract AI comments", "file", filePath, "error", err)
 			continue
 		}
 
@@ -509,13 +554,13 @@ func collectAllContextComments(rootDir string) []AIComment {
 		}
 	}
 
-	log.Printf("Found %d context comments", len(contextComments))
+	logger.Debug("Found context comments", "count", len(contextComments))
 	return contextComments
 }
 
 // triggerAICommentSearch manually searches for files with AI comments and processes them
 func triggerAICommentSearch(rootDir string, wrapper *CLIWrapper) {
-	log.Printf("=== MANUAL AI COMMENT SEARCH TRIGGERED ===")
+	logger.Info("=== MANUAL AI COMMENT SEARCH TRIGGERED ===")
 
 	// Create git ignore cache for this search
 	gitIgnore := NewGitIgnoreCache(rootDir)
@@ -523,53 +568,52 @@ func triggerAICommentSearch(rootDir string, wrapper *CLIWrapper) {
 	// Find all files with AI comments
 	files, err := FindFilesWithAIComments(rootDir, gitIgnore)
 	if err != nil {
-		log.Printf("ERROR: Failed to search for AI comments: %v", err)
+		logger.Error("Failed to search for AI comments", "error", err)
 		return
 	}
 
 	if len(files) == 0 {
-		log.Printf("No files with AI comments found in %s", rootDir)
+		logger.Info("No files with AI comments found", "root_dir", rootDir)
 		return
 	}
 
-	log.Printf("Found AI comments in %d files:", len(files))
+	logger.Info("Found AI comments in files", "file_count", len(files))
 
 	// Gather all unprocessed comments from all files
 	var allUnprocessedComments []AIComment
 
 	for _, filePath := range files {
-		log.Printf("Processing file: %s", filePath)
+		logger.Debug("Processing file", "file_path", filePath)
 
 		// Extract AI comments from the file
 		comments, err := ExtractAIComments(filePath)
 		if err != nil {
-			log.Printf("ERROR: Failed to extract AI comments from %s: %v", filePath, err)
+			logger.Error("Failed to extract AI comments", "file", filePath, "error", err)
 			continue
 		}
 
 		for i, comment := range comments {
-			log.Printf("  Comment #%d:", i+1)
-			log.Printf("    FilePath: %s", comment.FilePath)
-			log.Printf("    LineNumber: %d", comment.LineNumber)
-			if comment.EndLine > 0 && comment.EndLine != comment.LineNumber {
-				log.Printf("    EndLine: %d", comment.EndLine)
-			}
-			log.Printf("    Content: %s", comment.Content)
-			log.Printf("    ActionType: %s", comment.ActionType)
-			log.Printf("    Hash: %s", comment.Hash)
+			logger.Debug("Processing comment",
+				"comment_number", i+1,
+				"file_path", comment.FilePath,
+				"line_number", comment.LineNumber,
+				"end_line", comment.EndLine,
+				"content", comment.Content,
+				"action_type", comment.ActionType,
+				"hash", comment.Hash)
 
 			// Manual invocation only processes : comments (context)
 			if comment.ActionType == ":" {
 				// AI comments are included for context in manual search
-				log.Printf("    Status: CONTEXT - will include")
+				logger.Debug("Status: CONTEXT - will include")
 				allUnprocessedComments = append(allUnprocessedComments, comment)
 			} else if comment.ActionType == "?" || comment.ActionType == "!" {
 				// ? and ! comments are ignored by manual search (file watcher only)
-				log.Printf("    Status: QUICK ACTION - ignored by manual search")
+				logger.Debug("Status: QUICK ACTION - ignored by manual search")
 			} else {
-				log.Printf("    Status: UNSUPPORTED ACTION TYPE - skipping")
+				logger.Debug("Status: UNSUPPORTED ACTION TYPE - skipping")
 			}
-			log.Printf("    ---")
+			logger.Debug("---")
 		}
 	}
 
@@ -585,23 +629,23 @@ func triggerAICommentSearch(rootDir string, wrapper *CLIWrapper) {
 			prompt = renderMultipleContextPrompt(allUnprocessedComments)
 		}
 
-		log.Printf("Sending context prompt to underlying program: %s", prompt)
+		logger.Info("Sending context prompt to underlying program", "prompt", prompt)
 
 		// Send the context (without final newline to avoid auto-sending)
 		if _, err := wrapper.stdin.Write([]byte(prompt)); err != nil {
-			log.Printf("ERROR: Failed to send context to wrapped program: %v", err)
+			logger.Error("Failed to send context to wrapped program", "error", err)
 		} else {
-			log.Printf("Successfully sent context for %d comments (no auto-submit)", len(allUnprocessedComments))
+			logger.Info("Successfully sent context (no auto-submit)", "comment_count", len(allUnprocessedComments))
 		}
 	} else {
-		log.Printf("No unprocessed AI comments found")
+		logger.Info("No unprocessed AI comments found")
 	}
 
-	log.Printf("=== END MANUAL AI COMMENT SEARCH ===")
+	logger.Debug("=== END MANUAL AI COMMENT SEARCH ===")
 }
 
 func setupFileWatcher(watchDir string, wrapper *CLIWrapper) (*FileWatcher, error) {
-	log.Printf("Starting file watcher setup for directory: %s", watchDir)
+	logger.Info("Starting file watcher setup", "directory", watchDir)
 
 	// Create callback function that captures wrapper
 	onFileChange := func(filePath string) {
@@ -735,7 +779,7 @@ func processUserInput(input []byte, n int, wrapper *CLIWrapper) []byte {
 	for i := 0; i < n; i++ {
 		// Check for Ctrl+/ (ASCII 31) - trigger AI comment search
 		if input[i] == 31 {
-			log.Printf("Ctrl+/ detected - triggering AI comment search")
+			logger.Info("Ctrl+/ detected - triggering AI comment search")
 			go func() {
 				triggerAICommentSearch(".", wrapper)
 			}()
@@ -759,7 +803,7 @@ func processUserInput(input []byte, n int, wrapper *CLIWrapper) []byte {
 		} else if input[i] == 13 {
 			// Check INSERT mode status when Enter is pressed
 			insertMode := wrapper.isInInsertMode()
-			log.Printf("Enter key pressed - INSERT mode: %t", insertMode)
+			logger.Debug("Enter key pressed", "insert_mode", insertMode)
 
 			if insertMode {
 				// In INSERT mode: use backslash+enter behavior
@@ -864,13 +908,20 @@ func handleUserInput(wrapper *CLIWrapper) {
 }
 
 func main() {
-	// Set up logging to file to avoid interfering with wrapped program output
-	logFile, err := os.OpenFile("/tmp/matt.log", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
+	// Load configuration from environment variables
+	config := LoadConfig()
+
+	// Initialize logging based on configuration
+	var logFile *os.File
+	var err error
+	logger, logFile, err = initLogging(config)
 	if err != nil {
-		fmt.Printf("Failed to open log file: %v\n", err)
+		fmt.Printf("Failed to initialize logging: %v\n", err)
 		os.Exit(1)
 	}
-	log.SetOutput(logFile)
+	if logFile != nil {
+		defer logFile.Close()
+	}
 
 	// Always look for "claude" program on PATH
 	command, err := exec.LookPath("claude")
@@ -879,16 +930,13 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Load configuration from environment variables
-	config := LoadConfig()
-
 	// Pass all arguments straight through to claude
 	args := os.Args[1:]
 
 	// Create the CLI wrapper first (program starts in canonical mode like normal shell)
 	wrapper, err := NewCLIWrapper(config, command, args...)
 	if err != nil {
-		log.Printf("Failed to create CLI wrapper: %v", err)
+		logger.Error("Failed to create CLI wrapper", "error", err)
 		os.Exit(1)
 	}
 	defer wrapper.Close()
@@ -899,12 +947,12 @@ func main() {
 		var err error
 		oldState, err = term.MakeRaw(int(os.Stdin.Fd()))
 		if err != nil {
-			log.Printf("Warning: Failed to set terminal to raw mode: %v", err)
+			logger.Warn("Failed to set terminal to raw mode", "error", err)
 		} else {
 			defer term.Restore(int(os.Stdin.Fd()), oldState)
 		}
 	} else {
-		log.Printf("Input is not a terminal, skipping raw mode setup")
+		logger.Info("Input is not a terminal, skipping raw mode setup")
 	}
 
 	// Function to restore terminal and exit
@@ -926,7 +974,7 @@ func main() {
 
 	fileWatcher, err := setupFileWatcher(watchDir, wrapper)
 	if err != nil {
-		log.Printf("Failed to setup file watcher: %v", err)
+		logger.Error("Failed to setup file watcher", "error", err)
 		exitWithRestore(1)
 	}
 	defer fileWatcher.Close()
@@ -958,7 +1006,7 @@ func main() {
 	go func() {
 		for {
 			if os.Getppid() != parentPid {
-				log.Printf("Parent process died (was %d, now %d), shutting down", parentPid, os.Getppid())
+				logger.Info("Parent process died, shutting down", "old_pid", parentPid, "new_pid", os.Getppid())
 				wrapper.Close()
 				exitWithRestore(0)
 				return
@@ -969,16 +1017,16 @@ func main() {
 
 	go func() {
 		sig := <-c
-		log.Printf("Received %v, forwarding to wrapped process", sig)
+		logger.Info("Received signal, forwarding to wrapped process", "signal", sig)
 
 		// Forward signal to wrapped process for graceful shutdown
 		if wrapper.cmd.Process != nil {
 			wrapper.cmd.Process.Signal(sig)
-			log.Printf("Forwarded %v to wrapped process (PID: %d)", sig, wrapper.cmd.Process.Pid)
+			logger.Info("Forwarded signal to wrapped process", "signal", sig, "pid", wrapper.cmd.Process.Pid)
 
 			// Give wrapped process time to clean up gracefully
 			time.Sleep(10 * time.Second)
-			log.Printf("Grace period expired, forcing shutdown")
+			logger.Info("Grace period expired, forcing shutdown")
 		}
 
 		wrapper.Close()

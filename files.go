@@ -3,7 +3,6 @@ package main
 import (
 	"bytes"
 	"fmt"
-	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -31,10 +30,10 @@ func NewGitIgnoreCache(watchDir string) *GitIgnoreCache {
 	gitDir := filepath.Join(watchDir, ".git")
 	if info, err := os.Stat(gitDir); err == nil && info.IsDir() {
 		cache.isGitRepo = true
-		log.Printf("Git repository detected at: %s", watchDir)
+		logger.Info("Git repository detected", "dir", watchDir)
 		cache.loadGitIgnoredFiles(watchDir)
 	} else {
-		log.Printf("Not a git repository or .git not found in: %s", watchDir)
+		logger.Info("Not a git repository", "dir", watchDir)
 	}
 
 	return cache
@@ -51,12 +50,12 @@ func (g *GitIgnoreCache) loadGitIgnoredFiles(watchDir string) {
 	
 	err := cmd.Run()
 	if err != nil {
-		log.Printf("WARNING: Failed to find git root: %v", err)
+		logger.Warn("Failed to find git root", "error", err)
 		return
 	}
 	
 	gitRoot := strings.TrimSpace(rootOut.String())
-	log.Printf("Git repository root: %s", gitRoot)
+	logger.Info("Git repository root", "root", gitRoot)
 	
 	// Now get the list of ignored files from the git root
 	cmd = exec.Command("git", "ls-files", "--ignored", "--exclude-standard", "--others")
@@ -67,7 +66,7 @@ func (g *GitIgnoreCache) loadGitIgnoredFiles(watchDir string) {
 	
 	err = cmd.Run()
 	if err != nil {
-		log.Printf("WARNING: Failed to run git ls-files: %v", err)
+		logger.Warn("Failed to run git ls-files", "error", err)
 		return
 	}
 	
@@ -85,7 +84,7 @@ func (g *GitIgnoreCache) loadGitIgnoredFiles(watchDir string) {
 		}
 	}
 	
-	log.Printf("Loaded %d git-ignored files into cache", len(g.ignoredFiles))
+	logger.Info("Loaded git-ignored files into cache", "count", len(g.ignoredFiles))
 }
 
 // IsIgnored checks if a path is git-ignored
@@ -125,13 +124,13 @@ type FileWatcher struct {
 func NewFileWatcher(watchDir string, onFileChange func(string)) (*FileWatcher, error) {
 	// Check if the watch directory exists
 	if _, err := os.Stat(watchDir); os.IsNotExist(err) {
-		log.Printf("ERROR: Watch directory does not exist: %s", watchDir)
+		logger.Error("Watch directory does not exist", "dir", watchDir)
 		return nil, fmt.Errorf("watch directory does not exist: %s", watchDir)
 	}
 
 	watcher, err := fsnotify.NewWatcher()
 	if err != nil {
-		log.Printf("ERROR: Failed to create file watcher: %v", err)
+		logger.Error("Failed to create file watcher", "error", err)
 		return nil, fmt.Errorf("failed to create file watcher: %w", err)
 	}
 
@@ -145,7 +144,7 @@ func NewFileWatcher(watchDir string, onFileChange func(string)) (*FileWatcher, e
 		gitIgnore:    gitIgnore,
 	}
 
-	log.Printf("File watcher created successfully for directory: %s", watchDir)
+	logger.Info("File watcher created successfully", "dir", watchDir)
 	return fw, nil
 }
 
@@ -154,7 +153,7 @@ func (fw *FileWatcher) Start() error {
 	// Add the directory and all subdirectories to the watcher recursively
 	err := fw.addDirectoriesRecursively(fw.watchDir)
 	if err != nil {
-		log.Printf("ERROR: Failed to add directories to watcher: %v", err)
+		logger.Error("Failed to add directories to watcher", "error", err)
 		return fmt.Errorf("failed to add directories to watcher: %w", err)
 	}
 
@@ -164,15 +163,15 @@ func (fw *FileWatcher) Start() error {
 	// List files in the directory for debugging
 	files, err := filepath.Glob(filepath.Join(fw.watchDir, "*"))
 	if err != nil {
-		log.Printf("WARNING: Could not list files in watch directory: %v", err)
+		logger.Warn("Could not list files in watch directory", "error", err)
 	} else {
-		log.Printf("Files in watch directory (%d total):", len(files))
+		logger.Info("Files in watch directory", "count", len(files))
 		for _, file := range files {
 			info, err := os.Stat(file)
 			if err != nil {
-				log.Printf("  - %s (stat error: %v)", file, err)
+				logger.Debug("File stat error", "file", file, "error", err)
 			} else {
-				log.Printf("  - %s (size: %d, mode: %s)", file, info.Size(), info.Mode())
+				logger.Debug("File info", "file", file, "size", info.Size(), "mode", info.Mode())
 			}
 		}
 	}
@@ -191,46 +190,46 @@ func (fw *FileWatcher) Close() error {
 // processEvents handles file system events
 func (fw *FileWatcher) processEvents() {
 	defer fw.watcher.Close()
-	log.Printf("File watcher goroutine started, listening for events...")
+	logger.Info("File watcher goroutine started, listening for events")
 
 	for {
 		select {
 		case event, ok := <-fw.watcher.Events:
 			if !ok {
-				log.Printf("File watcher events channel closed")
+				logger.Info("File watcher events channel closed")
 				return
 			}
 
-			log.Printf("Raw file event received: %s | Op: %s", event.Name, event.Op.String())
+			logger.Debug("Raw file event received", "file", event.Name, "op", event.Op.String())
 
 			// Log all event types for debugging
 			if event.Op&fsnotify.Create == fsnotify.Create {
-				log.Printf("CREATE event: %s", event.Name)
+				logger.Debug("CREATE event", "file", event.Name)
 			}
 			if event.Op&fsnotify.Write == fsnotify.Write {
-				log.Printf("WRITE event: %s", event.Name)
+				logger.Debug("WRITE event", "file", event.Name)
 			}
 			if event.Op&fsnotify.Remove == fsnotify.Remove {
-				log.Printf("REMOVE event: %s", event.Name)
+				logger.Debug("REMOVE event", "file", event.Name)
 			}
 			if event.Op&fsnotify.Rename == fsnotify.Rename {
-				log.Printf("RENAME event: %s", event.Name)
+				logger.Debug("RENAME event", "file", event.Name)
 			}
 			if event.Op&fsnotify.Chmod == fsnotify.Chmod {
-				log.Printf("CHMOD event: %s", event.Name)
+				logger.Debug("CHMOD event", "file", event.Name)
 			}
 
 			// Handle directory creation events - add new directories to watcher
 			if event.Op&fsnotify.Create == fsnotify.Create {
 				if info, err := os.Stat(event.Name); err == nil && info.IsDir() {
 					if fw.shouldIgnoreDirectory(event.Name) {
-						log.Printf("Ignoring creation of ignored directory: %s", event.Name)
+						logger.Debug("Ignoring creation of ignored directory", "name", event.Name)
 					} else {
-						log.Printf("New directory created: %s", event.Name)
+						logger.Info("New directory created", "name", event.Name)
 						if err := fw.addDirectoriesRecursively(event.Name); err != nil {
-							log.Printf("WARNING: Failed to add new directory %s to watcher: %v", event.Name, err)
+							logger.Warn("Failed to add new directory to watcher", "dir", event.Name, "error", err)
 						} else {
-							log.Printf("Successfully added new directory %s and subdirectories to watcher", event.Name)
+							logger.Info("Successfully added new directory and subdirectories to watcher", "name", event.Name)
 						}
 					}
 				}
@@ -241,25 +240,25 @@ func (fw *FileWatcher) processEvents() {
 			if event.Op&fsnotify.Write == fsnotify.Write || event.Op&fsnotify.Create == fsnotify.Create {
 				// Skip files in ignored directories
 				if fw.shouldIgnoreDirectory(filepath.Dir(event.Name)) {
-					log.Printf("Ignoring file in ignored directory: %s", event.Name)
+					logger.Debug("Ignoring file in ignored directory", "name", event.Name)
 				} else if fw.gitIgnore != nil && fw.gitIgnore.isGitRepo && fw.gitIgnore.IsIgnored(event.Name) {
-					log.Printf("Ignoring git-ignored file: %s", event.Name)
+					logger.Debug("Ignoring git-ignored file", "name", event.Name)
 				} else {
 					ext := filepath.Ext(event.Name)
-					log.Printf("File extension detected: %s for file %s", ext, event.Name)
+					logger.Debug("File extension detected", "ext", ext, "file", event.Name)
 
 					// Skip temporary files (ending with ~, .tmp, .swp, etc.)
 					if strings.HasSuffix(event.Name, "~") ||
 						strings.HasSuffix(event.Name, ".tmp") ||
 						strings.HasSuffix(event.Name, ".swp") ||
 						strings.Contains(event.Name, ".#") {
-						log.Printf("Ignoring temporary file: %s", event.Name)
+						logger.Debug("Ignoring temporary file", "name", event.Name)
 					} else if ext == ".py" || ext == ".js" || ext == ".go" {
 						// Skip test files (contain false positives)
 						if filepath.Base(event.Name) == "test_comments.go" || filepath.Base(event.Name) == "comment_test.go" {
-							log.Printf("Ignoring test file: %s", event.Name)
+							logger.Debug("Ignoring test file", "name", event.Name)
 						} else {
-							log.Printf("File change detected for monitored extension: %s", event.Name)
+							logger.Info("File change detected for monitored extension", "name", event.Name)
 
 							// Call the callback function with the file path
 							if fw.onFileChange != nil {
@@ -267,17 +266,17 @@ func (fw *FileWatcher) processEvents() {
 							}
 						}
 					} else {
-						log.Printf("Ignoring file change for unmonitored extension: %s (file: %s)", ext, event.Name)
+						logger.Debug("Ignoring file change for unmonitored extension", "ext", ext, "file", event.Name)
 					}
 				}
 			} else {
-				log.Printf("Ignoring event type %s for file %s", event.Op.String(), event.Name)
+				logger.Debug("Ignoring event type", "op", event.Op.String(), "file", event.Name)
 			}
 
 		case err, ok := <-fw.watcher.Errors:
-			log.Printf("File watcher error: %v", err)
+			logger.Error("File watcher error", "error", err)
 			if !ok {
-				log.Printf("File watcher errors channel closed")
+				logger.Info("File watcher errors channel closed")
 				return
 			}
 		}
@@ -335,7 +334,7 @@ func (fw *FileWatcher) shouldIgnoreDirectory(dirPath string) bool {
 func (fw *FileWatcher) addDirectoriesRecursively(rootDir string) error {
 	return filepath.Walk(rootDir, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
-			log.Printf("WARNING: Error accessing path %s: %v", path, err)
+			logger.Warn("Error accessing path", "path", path, "error", err)
 			return nil // Continue walking even if one directory fails
 		}
 
@@ -343,16 +342,16 @@ func (fw *FileWatcher) addDirectoriesRecursively(rootDir string) error {
 		if info.IsDir() {
 			// Skip ignored directories
 			if fw.shouldIgnoreDirectory(path) {
-				log.Printf("Skipping ignored directory: %s", path)
+				logger.Debug("Skipping ignored directory", "path", path)
 				return filepath.SkipDir // Don't recurse into this directory
 			}
 
-			log.Printf("Adding directory to watcher: %s", path)
+			logger.Debug("Adding directory to watcher", "path", path)
 			if err := fw.watcher.Add(path); err != nil {
-				log.Printf("WARNING: Failed to add directory %s to watcher: %v", path, err)
+				logger.Warn("Failed to add directory to watcher", "path", path, "error", err)
 				return nil // Continue walking even if one directory fails
 			}
-			log.Printf("Successfully added directory to watcher: %s", path)
+			logger.Debug("Successfully added directory to watcher", "path", path)
 		}
 
 		return nil
@@ -368,11 +367,11 @@ func FindFilesWithAIComments(rootDir string, gitIgnore *GitIgnoreCache) ([]strin
 	var wg sync.WaitGroup
 	var fileCount int
 
-	log.Printf("Starting search for files with AI comments in directory: %s", rootDir)
+	logger.Debug("Starting search for files with AI comments", "directory", rootDir)
 
 	err := filepath.Walk(rootDir, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
-			log.Printf("WARNING: Error accessing path %s: %v", path, err)
+			logger.Warn("Error accessing path", "path", path, "error", err)
 			return nil // Continue walking even if one path fails
 		}
 
@@ -384,7 +383,7 @@ func FindFilesWithAIComments(rootDir string, gitIgnore *GitIgnoreCache) ([]strin
 				// Check file count limit for supported files only
 				fileCount++
 				if fileCount > maxFilesToSearch {
-					log.Printf("Stopping file search: reached limit of %d files", maxFilesToSearch)
+					logger.Warn("Stopping file search: reached limit", "limit", maxFilesToSearch)
 					return filepath.SkipAll
 				}
 				// Skip ignored directories and files
@@ -438,7 +437,7 @@ func FindFilesWithAIComments(rootDir string, gitIgnore *GitIgnoreCache) ([]strin
 		return nil, fmt.Errorf("failed to walk directory %s: %w", rootDir, err)
 	}
 
-	log.Printf("Found %d files with AI comments", len(files))
+	logger.Debug("Found files with AI comments", "count", len(files))
 	return files, nil
 }
 
@@ -447,18 +446,18 @@ func hasAIComments(filePath string) bool {
 	// Check file size before reading
 	fileInfo, err := os.Stat(filePath)
 	if err != nil {
-		log.Printf("WARNING: Failed to stat file %s: %v", filePath, err)
+		logger.Warn("Failed to stat file", "file", filePath, "error", err)
 		return false
 	}
 	if fileInfo.Size() > maxFileSize {
-		log.Printf("Skipping file %s: size %d bytes exceeds limit %d bytes", filePath, fileInfo.Size(), maxFileSize)
+		logger.Debug("Skipping large file", "file", filePath, "size", fileInfo.Size(), "limit", maxFileSize)
 		return false
 	}
 
 	// Read file contents
 	content, err := os.ReadFile(filePath)
 	if err != nil {
-		log.Printf("WARNING: Failed to read file %s: %v", filePath, err)
+		logger.Warn("Failed to read file", "file", filePath, "error", err)
 		return false
 	}
 
