@@ -31,7 +31,7 @@ func LoadConfig() *Config {
 		cfg.EnableOutputThrottling = parseBool(val)
 	}
 
-	if val := os.Getenv("CLAWDE_INPUT_TRACKING"); val != "" {
+	if val := os.Getenv("CLAWDE_INPUT_THROTTLING"); val != "" {
 		cfg.EnableInputThrottling = parseBool(val)
 	}
 

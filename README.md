@@ -79,6 +79,18 @@ locations without having to tell claude where to find each item.
 If you're in a git repo, gitignore rules are followed -- ignored files won't be
 processed for comments.
 
+## Configuration
+
+The following environment variables can be used to configure clawde's behavior:
+
+- `CLAWDE_OUTPUT_THROTTLING`: Experiment to reduce terminal flicker, not sure it works. This just limits screen redraws to happen at a lower frame rate (default: true)
+- `CLAWDE_INPUT_THROTTLING`: A separate, faster rate for when you're typing. (default: true)
+- `CLAWDE_HELD_ENTER_DETECTION`: Feature I tried but didn't like: hold enter key to actually submit (default: false)
+- `CLAWDE_LOG_FILE`: Specifies a file path for logging output (default: disabled)
+- `CLAWDE_LOG_LEVEL`: Sets the logging level (info, debug, error, etc.) (default: info)
+
+All boolean values accept "true", "1", "yes", or "on" (case-insensitive) as true.
+
 ## Notes
 
 - Obviously wrapping the shell is brittle and the features would be better built
