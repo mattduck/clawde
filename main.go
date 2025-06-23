@@ -16,19 +16,9 @@ import (
 	"golang.org/x/term"
 )
 
+const version = "v0.1.0"
+
 // NO_CLAWDE - This file is part of the CLI wrapper and should be excluded from comment detection
-
-// TODO: these were to try to reduce flicker, not sure if it actually
-// helps. might want to ignore.
-
-// Global flag to control output throttling
-var enableOutputThrottling = true
-
-// Global flag to control input tracking for adaptive delays
-var enableInputTracking = true
-
-// Global flag to control held enter detection
-var enableHeldEnterDetection = false
 
 type CLIWrapper struct {
 	cmd          *exec.Cmd
@@ -36,6 +26,7 @@ type CLIWrapper struct {
 	stdin        io.Writer
 	stdout       io.Reader
 	outputBuffer *outputBuffer
+	config       *Config
 }
 
 type outputBuffer struct {
@@ -55,7 +46,7 @@ type outputBuffer struct {
 	insertMutex      sync.RWMutex // Separate mutex for insert mode state
 }
 
-func NewCLIWrapper(command string, args ...string) (*CLIWrapper, error) {
+func NewCLIWrapper(config *Config, command string, args ...string) (*CLIWrapper, error) {
 	cmd := exec.Command(command, args...)
 
 	// Set up process group for proper job control
@@ -87,6 +78,7 @@ func NewCLIWrapper(command string, args ...string) (*CLIWrapper, error) {
 		ptmx:   ptmx,
 		stdin:  ptmx,
 		stdout: ptmx,
+		config: config,
 		outputBuffer: &outputBuffer{
 			fastDelay:    16 * time.Millisecond,            // 60fps when typing
 			slowDelay:    33 * time.Millisecond,            // 30fps when idle
@@ -264,7 +256,7 @@ func (w *CLIWrapper) Close() error {
 }
 
 func (w *CLIWrapper) CopyOutput() {
-	if enableOutputThrottling {
+	if w.config.EnableOutputThrottling {
 		// Start throttled output copying
 		go w.startThrottledOutput()
 	} else {
@@ -771,7 +763,7 @@ func processUserInput(input []byte, n int, wrapper *CLIWrapper) []byte {
 
 			if insertMode {
 				// In INSERT mode: use backslash+enter behavior
-				if enableHeldEnterDetection {
+				if wrapper.config.EnableHeldEnterDetection {
 					// Check if this is a held Enter key
 					shouldSendRawEnter := enterDetector.CheckHeld()
 
@@ -809,7 +801,7 @@ func processUserInput(input []byte, n int, wrapper *CLIWrapper) []byte {
 			// All other characters: pass through unchanged
 			processedInput = append(processedInput, input[i])
 			// Reset enter detector on any non-enter input (this flushes pending)
-			if enableHeldEnterDetection {
+			if wrapper.config.EnableHeldEnterDetection {
 				enterDetector.Reset()
 			}
 		}
@@ -825,7 +817,7 @@ func handleUserInput(wrapper *CLIWrapper) {
 		}
 	}()
 
-	if enableInputTracking {
+	if wrapper.config.EnableInputThrottling {
 		go func() {
 			// Create a buffer to intercept input and track typing activity
 			buffer := make([]byte, 1024)
@@ -887,11 +879,14 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Load configuration from environment variables
+	config := LoadConfig()
+
 	// Pass all arguments straight through to claude
 	args := os.Args[1:]
 
 	// Create the CLI wrapper first (program starts in canonical mode like normal shell)
-	wrapper, err := NewCLIWrapper(command, args...)
+	wrapper, err := NewCLIWrapper(config, command, args...)
 	if err != nil {
 		log.Printf("Failed to create CLI wrapper: %v", err)
 		os.Exit(1)
