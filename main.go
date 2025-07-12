@@ -792,6 +792,16 @@ func processUserInput(input []byte, n int, wrapper *CLIWrapper) []byte {
 			// Don't add this to processedInput (consume the key)
 			continue
 		}
+		// NOTE: suspend/restore doesn't work quite right
+		// Check for Ctrl+Z (ASCII 26) - suspend wrapper
+		if input[i] == 26 {
+			logger.Info("Ctrl+Z detected - suspending wrapper process")
+			go func() {
+				syscall.Kill(syscall.Getpid(), syscall.SIGSTOP)
+			}()
+			// Don't add this to processedInput (consume the key)
+			continue
+		}
 		// Check for Ctrl+N (ASCII 14) - map to down arrow
 		if input[i] == 14 {
 			processedInput = append(processedInput, '\x1b', '[', 'B')
@@ -1006,6 +1016,11 @@ func main() {
 	// Let PTY handle SIGINT (Ctrl+C) naturally to ensure proper forwarding
 	c := make(chan os.Signal, 1)
 	signal.Notify(c, syscall.SIGTERM, syscall.SIGHUP)
+	
+	// NOTE: suspend/restore doesn't work quite right
+	// Handle SIGCONT (resume from suspension) to restore terminal state
+	contChan := make(chan os.Signal, 1)
+	signal.Notify(contChan, syscall.SIGCONT)
 
 	// Also monitor parent process death (in case go run is killed)
 	parentPid := os.Getppid()
@@ -1037,6 +1052,31 @@ func main() {
 
 		wrapper.Close()
 		exitWithRestore(0)
+	}()
+
+	// NOTE: suspend/restore doesn't work quite right
+	// Handle SIGCONT to restore terminal state after resume
+	go func() {
+		for range contChan {
+			logger.Info("Received SIGCONT - restoring terminal state")
+			
+			// Restore raw mode if we had it before
+			if oldState != nil && term.IsTerminal(int(os.Stdin.Fd())) {
+				if _, err := term.MakeRaw(int(os.Stdin.Fd())); err != nil {
+					logger.Warn("Failed to restore raw mode after resume", "error", err)
+				} else {
+					logger.Info("Successfully restored raw mode after resume")
+				}
+			}
+			
+			// Restore terminal size to wrapped program
+			if size, err := pty.GetsizeFull(os.Stdout); err == nil {
+				pty.Setsize(wrapper.ptmx, size)
+				logger.Info("Restored terminal size after resume", "cols", size.Cols, "rows", size.Rows)
+			} else {
+				logger.Warn("Failed to restore terminal size after resume", "error", err)
+			}
+		}
 	}()
 
 	// Wait for the wrapped process to finish
