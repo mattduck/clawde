@@ -10,6 +10,7 @@ type Config struct {
 	EnableOutputThrottling   bool
 	EnableInputThrottling    bool
 	EnableHeldEnterDetection bool
+	ForceAnsi                bool
 	LogFile                  string
 	LogLevel                 string
 }
@@ -22,6 +23,7 @@ func LoadConfig() *Config {
 		EnableOutputThrottling:   true,
 		EnableInputThrottling:    true,
 		EnableHeldEnterDetection: false,
+		ForceAnsi:                true,
 		LogFile:                  "",
 		LogLevel:                 "info",
 	}
@@ -45,6 +47,10 @@ func LoadConfig() *Config {
 
 	if val := os.Getenv("CLAWDE_LOG_LEVEL"); val != "" {
 		cfg.LogLevel = val
+	}
+
+	if val := os.Getenv("CLAWDE_FORCE_ANSI"); val != "" {
+		cfg.ForceAnsi = parseBool(val)
 	}
 
 	return cfg

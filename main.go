@@ -94,6 +94,12 @@ type outputBuffer struct {
 func NewCLIWrapper(config *Config, command string, args ...string) (*CLIWrapper, error) {
 	cmd := exec.Command(command, args...)
 
+	// Set environment variables for the wrapped program
+	cmd.Env = append(os.Environ(), cmd.Env...)
+	if config.ForceAnsi {
+		cmd.Env = append(cmd.Env, "COLORTERM=ansi", "TERM=xterm")
+	}
+
 	// Set up process group for proper job control
 	// Setsid creates a new session and process group for the wrapped program.
 	//
