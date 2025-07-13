@@ -812,6 +812,11 @@ func processUserInput(input []byte, n int, wrapper *CLIWrapper) []byte {
 			processedInput = append(processedInput, '\x1b', '[', 'A')
 			continue
 		}
+		// Check for Ctrl+G (ASCII 7) - map to ESC
+		if input[i] == 7 {
+			processedInput = append(processedInput, '\x1b')
+			continue
+		}
 		// Check for Ctrl+J (ASCII 10) - reliable way to send actual Enter
 		if input[i] == 10 {
 			// Ctrl+J: send actual enter

@@ -79,6 +79,11 @@ locations without having to tell claude where to find each item.
 If you're in a git repo, gitignore rules are followed -- ignored files won't be
 processed for comments.
 
+### Additional key bindings
+
+- `C-g` will send `ESC`.
+- `C-p` and `C-n` map to up/down.
+
 ## Configuration
 
 The following environment variables can be used to configure clawde's behavior:
