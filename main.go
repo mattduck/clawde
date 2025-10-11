@@ -85,10 +85,11 @@ type outputBuffer struct {
 	inputTimeout time.Duration // How long to wait before switching to slow mode
 
 	// Terminal state analysis
-	currentLine      []byte       // Buffer to track the current line being built
-	lastNonEmptyLine []byte       // Buffer to track the last non-empty line
-	isInsertMode     bool         // Whether we're currently in INSERT mode
-	insertMutex      sync.RWMutex // Separate mutex for insert mode state
+	currentLine       []byte       // Buffer to track the current line being built
+	lastNonEmptyLines [][]byte     // Buffer to track the last N non-empty lines
+	trackLastNLines   int          // Number of lines to track (configurable for future expansion)
+	isInsertMode      bool         // Whether we're currently in INSERT mode
+	insertMutex       sync.RWMutex // Separate mutex for insert mode state
 }
 
 func NewCLIWrapper(config *Config, command string, args ...string) (*CLIWrapper, error) {
@@ -131,11 +132,12 @@ func NewCLIWrapper(config *Config, command string, args ...string) (*CLIWrapper,
 		stdout: ptmx,
 		config: config,
 		outputBuffer: &outputBuffer{
-			fastDelay:    16 * time.Millisecond,            // 60fps when typing
-			slowDelay:    33 * time.Millisecond,            // 30fps when idle
-			delay:        33 * time.Millisecond,            // Start in slow mode
-			inputTimeout: 2 * time.Second,                  // Switch to slow after 2s of no input
-			lastInput:    time.Now().Add(-3 * time.Second), // Start as "old" input
+			fastDelay:       16 * time.Millisecond,            // 60fps when typing
+			slowDelay:       33 * time.Millisecond,            // 30fps when idle
+			delay:           33 * time.Millisecond,            // Start in slow mode
+			inputTimeout:    2 * time.Second,                  // Switch to slow after 2s of no input
+			lastInput:       time.Now().Add(-3 * time.Second), // Start as "old" input
+			trackLastNLines: 3,                                // Track last 3 non-empty lines
 		},
 	}
 
@@ -390,11 +392,20 @@ func (w *CLIWrapper) updateInsertMode(newData []byte) {
 	// Update the current line buffer by processing new data
 	for _, b := range newData {
 		if b == '\n' || b == '\r' {
-			// New line detected - if current line is non-empty, save it as last non-empty line
+			// New line detected - if current line is non-empty, add it to the sliding window
 			if len(w.outputBuffer.currentLine) > 0 {
-				// Make a copy of the current line to store as last non-empty line
-				w.outputBuffer.lastNonEmptyLine = make([]byte, len(w.outputBuffer.currentLine))
-				copy(w.outputBuffer.lastNonEmptyLine, w.outputBuffer.currentLine)
+				// Make a copy of the current line to store in the sliding window
+				lineCopy := make([]byte, len(w.outputBuffer.currentLine))
+				copy(lineCopy, w.outputBuffer.currentLine)
+
+				// Add to the sliding window
+				w.outputBuffer.lastNonEmptyLines = append(w.outputBuffer.lastNonEmptyLines, lineCopy)
+
+				// Keep only the last N lines
+				if len(w.outputBuffer.lastNonEmptyLines) > w.outputBuffer.trackLastNLines {
+					// Remove the oldest line (first element)
+					w.outputBuffer.lastNonEmptyLines = w.outputBuffer.lastNonEmptyLines[1:]
+				}
 			}
 			// Reset the current line buffer
 			w.outputBuffer.currentLine = w.outputBuffer.currentLine[:0]
@@ -406,10 +417,15 @@ func (w *CLIWrapper) updateInsertMode(newData []byte) {
 		// for simplicity, but this might need refinement for more robust detection
 	}
 
-	// Check if the last non-empty line contains '-- INSERT --'
-	lastLineStr := string(w.outputBuffer.lastNonEmptyLine)
+	// Check if any of the last N non-empty lines contains '-- INSERT --'
 	// oldInsertMode := w.outputBuffer.isInsertMode
-	w.outputBuffer.isInsertMode = strings.Contains(lastLineStr, "-- INSERT ")
+	w.outputBuffer.isInsertMode = false
+	for _, line := range w.outputBuffer.lastNonEmptyLines {
+		if strings.Contains(string(line), "-- INSERT ") {
+			w.outputBuffer.isInsertMode = true
+			break
+		}
+	}
 
 	// Log mode changes for debugging
 	// if oldInsertMode != w.outputBuffer.isInsertMode {
@@ -1010,10 +1026,13 @@ func main() {
 	// 	for range ticker.C {
 	// 		insertMode := wrapper.isInInsertMode()
 	// 		wrapper.outputBuffer.insertMutex.RLock()
-	// 		lastNonEmptyLine := string(wrapper.outputBuffer.lastNonEmptyLine)
+	// 		lastNonEmptyLines := make([]string, len(wrapper.outputBuffer.lastNonEmptyLines))
+	// 		for i, line := range wrapper.outputBuffer.lastNonEmptyLines {
+	// 			lastNonEmptyLines[i] = string(line)
+	// 		}
 	// 		currentLine := string(wrapper.outputBuffer.currentLine)
 	// 		wrapper.outputBuffer.insertMutex.RUnlock()
-	// 		log.Printf("Periodic status check - INSERT mode: %t, last non-empty line: %q, current line: %q", insertMode, lastNonEmptyLine, currentLine)
+	// 		logger.Info("Periodic status check", "insert_mode", insertMode, "last_lines", lastNonEmptyLines, "current_line", currentLine)
 	// 	}
 	// }()
 
