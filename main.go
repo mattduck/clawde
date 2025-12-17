@@ -1006,18 +1006,20 @@ func main() {
 	// Start copying output from wrapped program to stdout
 	wrapper.CopyOutput()
 
-	// Set up file watching for current directory
-	watchDir := "."
-	if len(os.Args) > 2 && strings.HasPrefix(os.Args[len(os.Args)-1], "--watch=") {
-		watchDir = strings.TrimPrefix(os.Args[len(os.Args)-1], "--watch=")
-	}
+	// Set up file watching for current directory (if enabled)
+	if config.EnableWatchFiles {
+		watchDir := "."
+		if len(os.Args) > 2 && strings.HasPrefix(os.Args[len(os.Args)-1], "--watch=") {
+			watchDir = strings.TrimPrefix(os.Args[len(os.Args)-1], "--watch=")
+		}
 
-	fileWatcher, err := setupFileWatcher(watchDir, wrapper)
-	if err != nil {
-		logger.Error("Failed to setup file watcher", "error", err)
-		exitWithRestore(1)
+		fileWatcher, err := setupFileWatcher(watchDir, wrapper)
+		if err != nil {
+			logger.Error("Failed to setup file watcher", "error", err)
+			exitWithRestore(1)
+		}
+		defer fileWatcher.Close()
 	}
-	defer fileWatcher.Close()
 
 	// Handle user input
 	handleUserInput(wrapper)

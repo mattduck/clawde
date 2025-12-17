@@ -10,6 +10,7 @@ type Config struct {
 	EnableOutputThrottling   bool
 	EnableInputThrottling    bool
 	EnableHeldEnterDetection bool
+	EnableWatchFiles         bool
 	ForceAnsi                bool
 	BetterDefaults           bool
 	LogFile                  string
@@ -24,6 +25,7 @@ func LoadConfig() *Config {
 		EnableOutputThrottling:   true,
 		EnableInputThrottling:    true,
 		EnableHeldEnterDetection: false,
+		EnableWatchFiles:         false,
 		ForceAnsi:                true,
 		BetterDefaults:           true,
 		LogFile:                  "",
@@ -41,6 +43,10 @@ func LoadConfig() *Config {
 
 	if val := os.Getenv("CLAWDE_HELD_ENTER_DETECTION"); val != "" {
 		cfg.EnableHeldEnterDetection = parseBool(val)
+	}
+
+	if val := os.Getenv("CLAWDE_WATCHFILES"); val != "" {
+		cfg.EnableWatchFiles = parseBool(val)
 	}
 
 	if val := os.Getenv("CLAWDE_LOG_FILE"); val != "" {
