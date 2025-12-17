@@ -100,6 +100,9 @@ func NewCLIWrapper(config *Config, command string, args ...string) (*CLIWrapper,
 	if config.ForceAnsi {
 		cmd.Env = append(cmd.Env, "COLORTERM=ansi", "TERM=xterm")
 	}
+	if config.BetterDefaults {
+		cmd.Env = append(cmd.Env, "CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false")
+	}
 
 	// Set up process group for proper job control
 	// Setsid creates a new session and process group for the wrapped program.
