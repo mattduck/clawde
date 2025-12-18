@@ -72,6 +72,7 @@ type CLIWrapper struct {
 	stdout       io.Reader
 	outputBuffer *outputBuffer
 	config       *Config
+	tmuxDetector *TmuxInsertDetector
 }
 
 type outputBuffer struct {
@@ -83,13 +84,6 @@ type outputBuffer struct {
 	slowDelay    time.Duration // When idle (15fps)
 	lastInput    time.Time
 	inputTimeout time.Duration // How long to wait before switching to slow mode
-
-	// Terminal state analysis
-	currentLine       []byte       // Buffer to track the current line being built
-	lastNonEmptyLines [][]byte     // Buffer to track the last N non-empty lines
-	trackLastNLines   int          // Number of lines to track (configurable for future expansion)
-	isInsertMode      bool         // Whether we're currently in INSERT mode
-	insertMutex       sync.RWMutex // Separate mutex for insert mode state
 }
 
 func NewCLIWrapper(config *Config, command string, args ...string) (*CLIWrapper, error) {
@@ -135,12 +129,11 @@ func NewCLIWrapper(config *Config, command string, args ...string) (*CLIWrapper,
 		stdout: ptmx,
 		config: config,
 		outputBuffer: &outputBuffer{
-			fastDelay:       16 * time.Millisecond,            // 60fps when typing
-			slowDelay:       33 * time.Millisecond,            // 30fps when idle
-			delay:           33 * time.Millisecond,            // Start in slow mode
-			inputTimeout:    2 * time.Second,                  // Switch to slow after 2s of no input
-			lastInput:       time.Now().Add(-3 * time.Second), // Start as "old" input
-			trackLastNLines: 3,                                // Track last 3 non-empty lines
+			fastDelay:    16 * time.Millisecond,            // 60fps when typing
+			slowDelay:    33 * time.Millisecond,            // 30fps when idle
+			delay:        33 * time.Millisecond,            // Start in slow mode
+			inputTimeout: 2 * time.Second,                  // Switch to slow after 2s of no input
+			lastInput:    time.Now().Add(-3 * time.Second), // Start as "old" input
 		},
 	}
 
@@ -154,6 +147,13 @@ func NewCLIWrapper(config *Config, command string, args ...string) (*CLIWrapper,
 	// when typing when there was already previous messages above (ie. on my second prompt).
 	// this seemed to stop when we added the resize support.
 	wrapper.setupResizeHandler()
+
+	// Set up tmux-based INSERT mode detection if running in tmux
+	if IsRunningInTmux() {
+		wrapper.tmuxDetector = NewTmuxInsertDetector(150 * time.Millisecond)
+		wrapper.tmuxDetector.Start()
+		logger.Info("Tmux detected, using tmux-based INSERT mode detection")
+	}
 
 	return wrapper, nil
 }
@@ -302,6 +302,9 @@ func renderMultipleContextPrompt(comments []AIComment) string {
 }
 
 func (w *CLIWrapper) Close() error {
+	if w.tmuxDetector != nil {
+		w.tmuxDetector.Stop()
+	}
 	if w.ptmx != nil {
 		w.ptmx.Close()
 	}
@@ -344,9 +347,6 @@ func (w *CLIWrapper) startThrottledOutput() {
 			// Add the raw bytes to buffer (preserves \r, ANSI codes, etc.)
 			buf.data = append(buf.data, buffer[:n]...)
 
-			// Analyze the new data for INSERT mode detection
-			w.updateInsertMode(buffer[:n])
-
 			// Update delay based on recent input activity
 			now := time.Now()
 			if now.Sub(buf.lastInput) < buf.inputTimeout {
@@ -382,64 +382,10 @@ func (w *CLIWrapper) markUserInput() {
 
 // isInInsertMode safely checks if we're currently in INSERT mode
 func (w *CLIWrapper) isInInsertMode() bool {
-	w.outputBuffer.insertMutex.RLock()
-	defer w.outputBuffer.insertMutex.RUnlock()
-	return w.outputBuffer.isInsertMode
-}
-
-// updateInsertMode analyzes the output buffer and updates INSERT mode state
-func (w *CLIWrapper) updateInsertMode(newData []byte) {
-	w.outputBuffer.insertMutex.Lock()
-	defer w.outputBuffer.insertMutex.Unlock()
-
-	// Update the current line buffer by processing new data
-	for _, b := range newData {
-		if b == '\n' || b == '\r' {
-			// New line detected - if current line is non-empty, add it to the sliding window
-			if len(w.outputBuffer.currentLine) > 0 {
-				// Make a copy of the current line to store in the sliding window
-				lineCopy := make([]byte, len(w.outputBuffer.currentLine))
-				copy(lineCopy, w.outputBuffer.currentLine)
-
-				// Add to the sliding window
-				w.outputBuffer.lastNonEmptyLines = append(w.outputBuffer.lastNonEmptyLines, lineCopy)
-
-				// Keep only the last N lines
-				if len(w.outputBuffer.lastNonEmptyLines) > w.outputBuffer.trackLastNLines {
-					// Remove the oldest line (first element)
-					w.outputBuffer.lastNonEmptyLines = w.outputBuffer.lastNonEmptyLines[1:]
-				}
-			}
-			// Reset the current line buffer
-			w.outputBuffer.currentLine = w.outputBuffer.currentLine[:0]
-		} else if b >= 32 && b <= 126 {
-			// Printable ASCII character, add to current line
-			w.outputBuffer.currentLine = append(w.outputBuffer.currentLine, b)
-		}
-		// Note: We ignore ANSI escape sequences and other control characters
-		// for simplicity, but this might need refinement for more robust detection
+	if w.tmuxDetector != nil {
+		return w.tmuxDetector.IsInsertMode()
 	}
-
-	// Check if any of the last N non-empty lines contains '-- INSERT --'
-	// oldInsertMode := w.outputBuffer.isInsertMode
-	w.outputBuffer.isInsertMode = false
-	for _, line := range w.outputBuffer.lastNonEmptyLines {
-		if strings.Contains(string(line), "-- INSERT ") {
-			w.outputBuffer.isInsertMode = true
-			break
-		}
-	}
-
-	// Log mode changes for debugging
-	// if oldInsertMode != w.outputBuffer.isInsertMode {
-	// 	if w.outputBuffer.isInsertMode {
-	// 		// log.Printf("INSERT mode detected: %q", lastLineStr)
-	// 		log.Printf("INSERT mode detected")
-	// 	} else {
-	// 		log.Printf("INSERT mode ended")
-	// 		// log.Printf("INSERT mode ended: %q", lastLineStr)
-	// 	}
-	// }
+	return false
 }
 
 // setupResizeHandler handles terminal window resize events
@@ -1045,7 +991,7 @@ func main() {
 	// Let PTY handle SIGINT (Ctrl+C) naturally to ensure proper forwarding
 	c := make(chan os.Signal, 1)
 	signal.Notify(c, syscall.SIGTERM, syscall.SIGHUP)
-	
+
 	// NOTE: suspend/restore doesn't work quite right
 	// Handle SIGCONT (resume from suspension) to restore terminal state
 	contChan := make(chan os.Signal, 1)
@@ -1088,7 +1034,7 @@ func main() {
 	go func() {
 		for range contChan {
 			logger.Info("Received SIGCONT - restoring terminal state")
-			
+
 			// Restore raw mode if we had it before
 			if oldState != nil && term.IsTerminal(int(os.Stdin.Fd())) {
 				if _, err := term.MakeRaw(int(os.Stdin.Fd())); err != nil {
@@ -1097,7 +1043,7 @@ func main() {
 					logger.Info("Successfully restored raw mode after resume")
 				}
 			}
-			
+
 			// Restore terminal size to wrapped program
 			if size, err := pty.GetsizeFull(os.Stdout); err == nil {
 				pty.Setsize(wrapper.ptmx, size)
