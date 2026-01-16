@@ -103,11 +103,11 @@ var processedComments = make(map[string]bool)
 
 // Size limits to prevent performance issues with large files/lines
 const (
-	maxFileSize       = 10 * 1024 * 1024 // 10MB - skip files larger than this
-	maxLineLength     = 10 * 1024        // 10KB - skip lines longer than this
-	maxTotalLines     = 50000            // Skip files with more lines than this
-	maxFilesToSearch  = 10000            // Stop searching after this many files
-	maxCommentLength  = 1000             // Maximum comment content length before truncation
+	maxFileSize      = 10 * 1024 * 1024 // 10MB - skip files larger than this
+	maxLineLength    = 10 * 1024        // 10KB - skip lines longer than this
+	maxTotalLines    = 50000            // Skip files with more lines than this
+	maxFilesToSearch = 10000            // Stop searching after this many files
+	maxCommentLength = 1000             // Maximum comment content length before truncation
 )
 
 // truncateComment truncates comment content if it exceeds maxCommentLength
@@ -121,7 +121,7 @@ func truncateComment(content string) string {
 // checkForOptOut scans file content for NO_CLAWDE marker in any comment type
 func checkForOptOut(content string, ext string) bool {
 	lines := strings.Split(content, "\n")
-	
+
 	// Get comment patterns for this file extension
 	patterns, exists := commentPatterns[ext]
 	if !exists {
@@ -154,7 +154,7 @@ func checkForOptOut(content string, ext string) bool {
 			if !inComment && pair.Start.MatchString(line) {
 				inComment = true
 				commentLines = []string{line}
-				
+
 				// Check if end pattern is also on the same line (single-line multiline comment)
 				if pair.End.MatchString(line) {
 					// Process the comment immediately
@@ -220,13 +220,13 @@ func ExtractAIComments(filePath string) ([]AIComment, error) {
 	}
 
 	lines := strings.Split(string(content), "\n")
-	
+
 	// Check total line count
 	if len(lines) > maxTotalLines {
 		logger.Debug("Skipping file: lines exceed limit", "file", filePath, "lines", len(lines), "limit", maxTotalLines)
 		return nil, nil
 	}
-	
+
 	var comments []AIComment
 
 	// Check single-line comments
@@ -589,7 +589,6 @@ func determineActionType(fullComment string, ext string) string {
 	// This should never happen if hasValidAIMarker returned true
 	logger.Error("Internal error: determineActionType called but no valid AI marker found in comment", "comment", fullComment)
 	panic("Internal error: determineActionType called but no valid AI marker found")
-	return ""
 }
 
 // extractContextLines gets N lines before and after the target line
@@ -700,7 +699,7 @@ func clearProcessedCache() {
 // Returns the first non-colon marker found, or ":" if only colon markers exist
 func checkAIMarkerInLines(lines []string) string {
 	hasContext := false
-	
+
 	for _, line := range lines {
 		if line == "" {
 			continue

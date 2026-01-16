@@ -51,36 +51,36 @@ func extractAICommentsFromString(content, filePath string) ([]AIComment, error) 
 func TestGoSingleLineComments(t *testing.T) {
 	initTestLogger()
 	tests := []struct {
-		name     string
-		content  string
-		expected int
-		wantType string
+		name        string
+		content     string
+		expected    int
+		wantType    string
 		wantContent string
-		wantLine int
+		wantLine    int
 	}{
 		{
-			name:     "Go comment with AI?",
-			content:  "package main\n\n// This is a test comment AI?\nfunc main() {}",
-			expected: 1,
-			wantType: "?",
+			name:        "Go comment with AI?",
+			content:     "package main\n\n// This is a test comment AI?\nfunc main() {}",
+			expected:    1,
+			wantType:    "?",
 			wantContent: "This is a test comment AI?",
-			wantLine: 3,
+			wantLine:    3,
 		},
 		{
-			name:     "Go comment with AI!",
-			content:  "package main\n\n// Fix this function AI!\nfunc main() {}",
-			expected: 1,
-			wantType: "!",
+			name:        "Go comment with AI!",
+			content:     "package main\n\n// Fix this function AI!\nfunc main() {}",
+			expected:    1,
+			wantType:    "!",
 			wantContent: "Fix this function AI!",
-			wantLine: 3,
+			wantLine:    3,
 		},
 		{
-			name:     "Go comment with AI:",
-			content:  "package main\n\n// AI: there's the placeholder\nfunc main() {}",
-			expected: 1,
-			wantType: ":",
+			name:        "Go comment with AI:",
+			content:     "package main\n\n// AI: there's the placeholder\nfunc main() {}",
+			expected:    1,
+			wantType:    ":",
 			wantContent: "AI: there's the placeholder",
-			wantLine: 3,
+			wantLine:    3,
 		},
 		{
 			name:     "Go comment without AI marker",
@@ -88,12 +88,12 @@ func TestGoSingleLineComments(t *testing.T) {
 			expected: 0,
 		},
 		{
-			name:     "Multiple AI comments",
-			content:  "// First comment AI?\n\n// Second comment AI!\n\nfunc main() {}",
-			expected: 2,
-			wantType: "?",
+			name:        "Multiple AI comments",
+			content:     "// First comment AI?\n\n// Second comment AI!\n\nfunc main() {}",
+			expected:    2,
+			wantType:    "?",
 			wantContent: "First comment AI?",
-			wantLine: 1,
+			wantLine:    1,
 		},
 		{
 			name:     "AI marker in middle of comment",
@@ -101,12 +101,12 @@ func TestGoSingleLineComments(t *testing.T) {
 			expected: 0,
 		},
 		{
-			name:     "Indented comment",
-			content:  "package main\n\nfunc main() {\n    // Indented comment AI?\n}",
-			expected: 1,
-			wantType: "?",
+			name:        "Indented comment",
+			content:     "package main\n\nfunc main() {\n    // Indented comment AI?\n}",
+			expected:    1,
+			wantType:    "?",
 			wantContent: "Indented comment AI?",
-			wantLine: 4,
+			wantLine:    4,
 		},
 		{
 			name:     "Empty file",
@@ -253,10 +253,10 @@ func TestPythonSingleLineComments(t *testing.T) {
 
 func TestMultilineComments(t *testing.T) {
 	tests := []struct {
-		name     string
-		content  string
-		expected int
-		wantType string
+		name        string
+		content     string
+		expected    int
+		wantType    string
 		wantContent string
 	}{
 		{
@@ -268,8 +268,8 @@ func TestMultilineComments(t *testing.T) {
  * that needs clarification AI?
  */
 func main() {}`,
-			expected: 1,
-			wantType: "?",
+			expected:    1,
+			wantType:    "?",
 			wantContent: "This is a multiline comment that needs clarification AI?",
 		},
 		{
@@ -281,8 +281,8 @@ func main() {}`,
  * It has performance issues
  */
 function test() {}`,
-			expected: 1,
-			wantType: "!",
+			expected:    1,
+			wantType:    "!",
 			wantContent: "TODO: Fix this implementation AI! It has performance issues",
 		},
 		{
@@ -294,10 +294,10 @@ function test() {}`,
 			expected: 0,
 		},
 		{
-			name: "Single line multiline comment",
-			content: "/* Quick comment AI? */",
-			expected: 1,
-			wantType: "?",
+			name:        "Single line multiline comment",
+			content:     "/* Quick comment AI? */",
+			expected:    1,
+			wantType:    "?",
 			wantContent: "Quick comment AI?",
 		},
 		{
@@ -307,32 +307,32 @@ function test() {}`,
  * for performance optimizations
  */
 function test() {}`,
-			expected: 1,
-			wantType: ":",
+			expected:    1,
+			wantType:    ":",
 			wantContent: "AI: this function needs review for performance optimizations",
 		},
 		{
-			name: "Single-line multiline comment with content",
-			content: "/* This is a single-line multiline comment AI? */",
-			expected: 1,
-			wantType: "?",
+			name:        "Single-line multiline comment with content",
+			content:     "/* This is a single-line multiline comment AI? */",
+			expected:    1,
+			wantType:    "?",
 			wantContent: "This is a single-line multiline comment AI?",
 		},
 		{
-			name: "Python single-line triple quote with content",
-			content: `"""This is a single-line docstring AI!"""`,
-			expected: 1,
-			wantType: "!",
+			name:        "Python single-line triple quote with content",
+			content:     `"""This is a single-line docstring AI!"""`,
+			expected:    1,
+			wantType:    "!",
 			wantContent: "This is a single-line docstring AI!",
 		},
 		{
-			name: "Empty multiline markers should not match",
-			content: `/**/`,
+			name:     "Empty multiline markers should not match",
+			content:  `/**/`,
 			expected: 0,
 		},
 		{
-			name: "Python empty triple quotes should not match",
-			content: `""""""`,
+			name:     "Python empty triple quotes should not match",
+			content:  `""""""`,
 			expected: 0,
 		},
 	}
@@ -346,7 +346,7 @@ function test() {}`,
 			if strings.Contains(tt.name, "Python") {
 				ext = ".py"
 			}
-			
+
 			comments, err := extractAICommentsFromString(tt.content, "test"+ext)
 			if err != nil {
 				t.Fatalf("extractAICommentsFromString() error = %v", err)
@@ -389,7 +389,7 @@ line 7`
 	}
 
 	comment := comments[0]
-	
+
 	// Should have context lines
 	if len(comment.ContextLines) == 0 {
 		t.Errorf("Expected context lines, got none")
@@ -482,7 +482,7 @@ func TestCaching(t *testing.T) {
 
 func TestUnsupportedFileExtensions(t *testing.T) {
 	content := "// This is a comment AI?"
-	
+
 	comments, err := extractAICommentsFromString(content, "test.txt")
 	if err != nil {
 		t.Fatalf("extractAICommentsFromString() error = %v", err)
@@ -651,9 +651,9 @@ func main() {
 
 func TestConsecutiveSingleLineComments(t *testing.T) {
 	tests := []struct {
-		name     string
-		content  string
-		expected int
+		name          string
+		content       string
+		expected      int
 		wantStartLine int
 		wantEndLine   int
 		wantContent   string
@@ -668,11 +668,11 @@ func TestConsecutiveSingleLineComments(t *testing.T) {
 // and should be grouped AI?
 
 func main() {}`,
-			expected: 1,
+			expected:      1,
 			wantStartLine: 3,
-			wantEndLine: 5,
-			wantContent: "This is a long comment that spans multiple lines and should be grouped AI?",
-			wantType: "?",
+			wantEndLine:   5,
+			wantContent:   "This is a long comment that spans multiple lines and should be grouped AI?",
+			wantType:      "?",
 		},
 		{
 			name: "consecutive whole-line comments with AI!",
@@ -683,11 +683,11 @@ func main() {}`,
 // please optimize AI!
 
 func main() {}`,
-			expected: 1,
+			expected:      1,
 			wantStartLine: 3,
-			wantEndLine: 5,
-			wantContent: "Fix this function it has performance issues please optimize AI!",
-			wantType: "!",
+			wantEndLine:   5,
+			wantContent:   "Fix this function it has performance issues please optimize AI!",
+			wantType:      "!",
 		},
 		{
 			name: "consecutive comments with AI marker on first line",
@@ -698,11 +698,11 @@ func main() {}`,
 // and here too
 
 func main() {}`,
-			expected: 1,
+			expected:      1,
 			wantStartLine: 3,
-			wantEndLine: 5,
-			wantContent: "blah AI? continues here and here too",
-			wantType: "?",
+			wantEndLine:   5,
+			wantContent:   "blah AI? continues here and here too",
+			wantType:      "?",
 		},
 		{
 			name: "mixed inline and whole-line comments - should not group",
@@ -712,11 +712,11 @@ func test() { // inline comment AI?
 // whole line comment
 // another whole line comment AI!
 }`,
-			expected: 2, // Should find 2 separate comments
+			expected:      2, // Should find 2 separate comments
 			wantStartLine: 3, // First comment (inline)
-			wantEndLine: 0,   // Inline comment has EndLine = 0
-			wantContent: "inline comment AI?",
-			wantType: "?",
+			wantEndLine:   0, // Inline comment has EndLine = 0
+			wantContent:   "inline comment AI?",
+			wantType:      "?",
 		},
 		{
 			name: "single whole-line comment - should not have EndLine",
@@ -725,11 +725,11 @@ func test() { // inline comment AI?
 // Single comment AI?
 
 func main() {}`,
-			expected: 1,
+			expected:      1,
 			wantStartLine: 3,
-			wantEndLine: 0, // Single line should have EndLine = 0
-			wantContent: "Single comment AI?",
-			wantType: "?",
+			wantEndLine:   0, // Single line should have EndLine = 0
+			wantContent:   "Single comment AI?",
+			wantType:      "?",
 		},
 		{
 			name: "consecutive comments with gap - should not group",
@@ -740,11 +740,11 @@ func main() {}`,
 // Second comment after gap AI!
 
 func main() {}`,
-			expected: 2, // Should find 2 separate comments
+			expected:      2, // Should find 2 separate comments
 			wantStartLine: 3, // First comment
-			wantEndLine: 0,   // Single line
-			wantContent: "First comment AI?",
-			wantType: "?",
+			wantEndLine:   0, // Single line
+			wantContent:   "First comment AI?",
+			wantType:      "?",
 		},
 		{
 			name: "consecutive comments without AI marker - should not match",
@@ -858,7 +858,7 @@ func TestCaseInsensitiveAIMarkers(t *testing.T) {
 			wantType: ":",
 		},
 		{
-			name:     "multiline with mixed case",
+			name: "multiline with mixed case",
 			content: `/*
  * This is a multiline comment
  * that needs review ai?
@@ -871,7 +871,7 @@ func TestCaseInsensitiveAIMarkers(t *testing.T) {
 			content: `// First comment ai?
 // Second comment AI!
 // Third comment Ai?`,
-			expected: 1, // Should be grouped into one comment
+			expected: 1,   // Should be grouped into one comment
 			wantType: "?", // First marker wins
 		},
 	}
@@ -995,7 +995,7 @@ func TestAIMarkersWithinMultilineComments(t *testing.T) {
  * Fix the performance issues AI!
  */`,
 			expected:     1,
-			wantTypes:    []string{"!"},  // AI! takes precedence
+			wantTypes:    []string{"!"}, // AI! takes precedence
 			wantContents: []string{"AI: This needs attention What about error handling AI? Fix the performance issues AI!"},
 		},
 		{
@@ -1046,7 +1046,7 @@ More documentation here
  * Another comment block
  * Fix this implementation AI!
  */`,
-			expected: 2,
+			expected:  2,
 			wantTypes: []string{"?", "!"},
 			wantContents: []string{
 				"First part of comment What should happen here AI?",
@@ -1061,7 +1061,7 @@ More documentation here
 			if strings.Contains(tt.content, `"""`) {
 				ext = ".py"
 			}
-			
+
 			comments, err := extractAICommentsFromString(tt.content, "test"+ext)
 			if err != nil {
 				t.Fatalf("extractAICommentsFromString() error = %v", err)
@@ -1089,24 +1089,24 @@ More documentation here
 
 func TestMixedAIMarkers(t *testing.T) {
 	tests := []struct {
-		name     string
-		content  string
-		expected int
-		wantTypes []string
+		name         string
+		content      string
+		expected     int
+		wantTypes    []string
 		wantContents []string
 	}{
 		{
-			name:     "Comment with AI: and AI!",
-			content:  "// AI: This function needs optimization AI!",
-			expected: 1,
-			wantTypes: []string{"!"},
+			name:         "Comment with AI: and AI!",
+			content:      "// AI: This function needs optimization AI!",
+			expected:     1,
+			wantTypes:    []string{"!"},
 			wantContents: []string{"AI: This function needs optimization AI!"},
 		},
 		{
-			name:     "Comment with AI: and AI?",
-			content:  "// AI: What about error handling here AI?",
-			expected: 1,
-			wantTypes: []string{"?"},
+			name:         "Comment with AI: and AI?",
+			content:      "// AI: What about error handling here AI?",
+			expected:     1,
+			wantTypes:    []string{"?"},
 			wantContents: []string{"AI: What about error handling here AI?"},
 		},
 		{
@@ -1118,8 +1118,8 @@ func TestMixedAIMarkers(t *testing.T) {
 // and error handling AI!
 
 func test() {}`,
-			expected: 1,
-			wantTypes: []string{"!"},
+			expected:     1,
+			wantTypes:    []string{"!"},
 			wantContents: []string{"AI: This block needs review Consider performance optimization and error handling AI!"},
 		},
 		{
@@ -1127,8 +1127,8 @@ func test() {}`,
 			content: `// AI: some context
 // Fix this please AI!
 // More details here`,
-			expected: 1,
-			wantTypes: []string{"!"},
+			expected:     1,
+			wantTypes:    []string{"!"},
 			wantContents: []string{"AI: some context Fix this please AI! More details here"},
 		},
 		{
@@ -1137,15 +1137,15 @@ func test() {}`,
  * AI: Check this implementation
  * for thread safety issues AI?
  */`,
-			expected: 1,
-			wantTypes: []string{"?"},
+			expected:     1,
+			wantTypes:    []string{"?"},
 			wantContents: []string{"AI: Check this implementation for thread safety issues AI?"},
 		},
 		{
-			name:     "AI: in middle with AI! at end",
-			content:  "// This comment AI: has markers in various places AI!",
-			expected: 1,
-			wantTypes: []string{"!"},
+			name:         "AI: in middle with AI! at end",
+			content:      "// This comment AI: has markers in various places AI!",
+			expected:     1,
+			wantTypes:    []string{"!"},
 			wantContents: []string{"This comment AI: has markers in various places AI!"},
 		},
 		{
@@ -1154,25 +1154,25 @@ func test() {}`,
 			expected: 0,
 		},
 		{
-			name:     "Multiple AI: markers with AI?",
-			content:  "// AI: First marker AI: Second marker AI?",
-			expected: 1,
-			wantTypes: []string{"?"},
+			name:         "Multiple AI: markers with AI?",
+			content:      "// AI: First marker AI: Second marker AI?",
+			expected:     1,
+			wantTypes:    []string{"?"},
 			wantContents: []string{"AI: First marker AI: Second marker AI?"},
 		},
 		{
 			name: "Separate comments with different markers",
 			content: `// AI: This is the first comment
 // This is a separate comment AI?`,
-			expected: 1, // Should be grouped together
-			wantTypes: []string{"?"},
+			expected:     1, // Should be grouped together
+			wantTypes:    []string{"?"},
 			wantContents: []string{"AI: This is the first comment This is a separate comment AI?"},
 		},
 		{
-			name:     "Only AI: marker (no ? or !)",
-			content:  "// AI: This only has colon marker",
-			expected: 1,
-			wantTypes: []string{":"},
+			name:         "Only AI: marker (no ? or !)",
+			content:      "// AI: This only has colon marker",
+			expected:     1,
+			wantTypes:    []string{":"},
 			wantContents: []string{"AI: This only has colon marker"},
 		},
 	}

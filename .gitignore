@@ -1,0 +1,4 @@
+# Test gitignore for nested directory handling
+foo/matt.py
+*.log
+test_ignored.py

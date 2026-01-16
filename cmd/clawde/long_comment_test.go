@@ -20,26 +20,26 @@ func TestLongCommentsWithAIMarkers(t *testing.T) {
 	}
 	// Create a comment longer than maxCommentLength (1000 characters)
 	longPrefix := strings.Repeat("This is a very long comment that exceeds the maximum comment length. ", 15) // ~1050 characters
-	
+
 	tests := []struct {
-		name        string
-		content     string
-		expected    int
-		wantType    string
+		name           string
+		content        string
+		expected       int
+		wantType       string
 		shouldTruncate bool
 	}{
 		{
-			name:        "Long single-line comment ending with AI?",
-			content:     fmt.Sprintf("// %s AI?", longPrefix),
-			expected:    1,
-			wantType:    "?",
+			name:           "Long single-line comment ending with AI?",
+			content:        fmt.Sprintf("// %s AI?", longPrefix),
+			expected:       1,
+			wantType:       "?",
 			shouldTruncate: true,
 		},
 		{
-			name:        "Long single-line comment ending with AI!",
-			content:     fmt.Sprintf("// %s AI!", longPrefix),
-			expected:    1,
-			wantType:    "!",
+			name:           "Long single-line comment ending with AI!",
+			content:        fmt.Sprintf("// %s AI!", longPrefix),
+			expected:       1,
+			wantType:       "!",
 			shouldTruncate: true,
 		},
 		{
@@ -48,8 +48,8 @@ func TestLongCommentsWithAIMarkers(t *testing.T) {
  * %s
  * AI?
  */`, longPrefix),
-			expected:    1,
-			wantType:    "?",
+			expected:       1,
+			wantType:       "?",
 			shouldTruncate: true,
 		},
 		{
@@ -58,8 +58,8 @@ func TestLongCommentsWithAIMarkers(t *testing.T) {
  * %s
  * AI!
  */`, longPrefix),
-			expected:    1,
-			wantType:    "!",
+			expected:       1,
+			wantType:       "!",
 			shouldTruncate: true,
 		},
 		{
@@ -68,8 +68,8 @@ func TestLongCommentsWithAIMarkers(t *testing.T) {
 // More content here
 // Even more content
 // AI?`, longPrefix),
-			expected:    1,
-			wantType:    "?",
+			expected:       1,
+			wantType:       "?",
 			shouldTruncate: true,
 		},
 	}
@@ -88,7 +88,7 @@ func TestLongCommentsWithAIMarkers(t *testing.T) {
 
 			if tt.expected > 0 {
 				comment := comments[0]
-				
+
 				// Verify ActionType is detected correctly despite long content
 				if comment.ActionType != tt.wantType {
 					t.Errorf("Expected ActionType %s, got %s", tt.wantType, comment.ActionType)

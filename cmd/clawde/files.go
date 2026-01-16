@@ -44,35 +44,35 @@ func (g *GitIgnoreCache) loadGitIgnoredFiles(watchDir string) {
 	// First, find the git repository root
 	cmd := exec.Command("git", "rev-parse", "--show-toplevel")
 	cmd.Dir = watchDir
-	
+
 	var rootOut bytes.Buffer
 	cmd.Stdout = &rootOut
-	
+
 	err := cmd.Run()
 	if err != nil {
 		logger.Warn("Failed to find git root", "error", err)
 		return
 	}
-	
+
 	gitRoot := strings.TrimSpace(rootOut.String())
 	logger.Info("Git repository root", "root", gitRoot)
-	
+
 	// Now get the list of ignored files from the git root
 	cmd = exec.Command("git", "ls-files", "--ignored", "--exclude-standard", "--others")
 	cmd.Dir = gitRoot
-	
+
 	var out bytes.Buffer
 	cmd.Stdout = &out
-	
+
 	err = cmd.Run()
 	if err != nil {
 		logger.Warn("Failed to run git ls-files", "error", err)
 		return
 	}
-	
+
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	
+
 	// Parse the output and store in map
 	lines := strings.Split(strings.TrimSpace(out.String()), "\n")
 	for _, line := range lines {
@@ -83,7 +83,7 @@ func (g *GitIgnoreCache) loadGitIgnoredFiles(watchDir string) {
 			g.ignoredFiles[absPath] = true
 		}
 	}
-	
+
 	logger.Info("Loaded git-ignored files into cache", "count", len(g.ignoredFiles))
 }
 
@@ -91,12 +91,12 @@ func (g *GitIgnoreCache) loadGitIgnoredFiles(watchDir string) {
 func (g *GitIgnoreCache) IsIgnored(path string) bool {
 	g.mu.RLock()
 	defer g.mu.RUnlock()
-	
+
 	// Check exact path match
 	if g.ignoredFiles[path] {
 		return true
 	}
-	
+
 	// Check if any parent directory is ignored
 	dir := path
 	for {
@@ -108,7 +108,7 @@ func (g *GitIgnoreCache) IsIgnored(path string) bool {
 			return true
 		}
 	}
-	
+
 	return false
 }
 
@@ -291,7 +291,7 @@ func (fw *FileWatcher) shouldIgnoreDirectory(dirPath string) bool {
 			return true
 		}
 	}
-	
+
 	dirName := filepath.Base(dirPath)
 
 	// Always ignore .git directory
@@ -388,7 +388,7 @@ func FindFilesWithAIComments(rootDir string, gitIgnore *GitIgnoreCache) ([]strin
 				}
 				// Skip ignored directories and files
 				dirPath := filepath.Dir(path)
-				
+
 				// Check git ignore cache if available
 				if gitIgnore != nil && gitIgnore.isGitRepo {
 					// Check both the file and its directory
@@ -396,13 +396,13 @@ func FindFilesWithAIComments(rootDir string, gitIgnore *GitIgnoreCache) ([]strin
 						return nil
 					}
 				}
-				
+
 				// Check standard ignore patterns
 				dirName := filepath.Base(dirPath)
 				if dirName == ".git" || strings.HasPrefix(dirName, ".") && dirName != "." {
 					return nil
 				}
-				
+
 				// Check common ignored directories
 				ignoredDirs := []string{"node_modules", "__pycache__", ".pytest_cache", "vendor", "build", "dist"}
 				for _, ignored := range ignoredDirs {
