@@ -387,3 +387,149 @@ func TestParseRelativePath(t *testing.T) {
 		t.Errorf("expected --- a/src/main.go in:\n%s", unified)
 	}
 }
+
+func TestParseWriteFormat(t *testing.T) {
+	// Write format uses ⏺ Write(...) instead of ⏺ Update(...)
+	// and has decorative header/footer lines
+	input := `⏺ Write(/path/to/main.go)
+
+────────────────────────────────────────────────────────────────────────────────
+ Overwrite file main.go
+╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
+   1  package main
+   2
+   3  import (
+   4 +  "crypto/sha256"
+   5 +  "encoding/hex"
+   6    "flag"
+   7    "fmt"
+ ...
+  64 -  // Capture pane content
+  64 +  if *watchFlag {
+  65 +    runWatchMode(targetPane, *intervalFlag, *noPagerFlag)
+  66 +    return
+  67 +  }
+╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
+ Do you want to overwrite main.go?
+`
+
+	diffs := Parse(input)
+
+	if len(diffs) != 1 {
+		t.Fatalf("expected 1 diff, got %d", len(diffs))
+	}
+
+	d := diffs[0]
+	if d.Path != "/path/to/main.go" {
+		t.Errorf("expected path /path/to/main.go, got %s", d.Path)
+	}
+
+	// Has a "..." break so should be 2 hunks
+	if len(d.Hunks) != 2 {
+		t.Fatalf("expected 2 hunks (separated by ...), got %d", len(d.Hunks))
+	}
+
+	// Count additions and deletions across all hunks
+	var additions, deletions int
+	for _, h := range d.Hunks {
+		for _, line := range h.Lines {
+			switch line.Type {
+			case LineAdd:
+				additions++
+			case LineDelete:
+				deletions++
+			}
+		}
+	}
+
+	// Should have 6 additions and 1 deletion total
+	if additions != 6 {
+		t.Errorf("expected 6 additions, got %d", additions)
+	}
+	if deletions != 1 {
+		t.Errorf("expected 1 deletion, got %d", deletions)
+	}
+}
+
+func TestParseUpdateWithBreaks(t *testing.T) {
+	// Update format with " ..." breaks should create multiple hunks
+	input := `⏺ Update(/path/to/file.go)
+  ⎿  Changed multiple lines
+      10      func hello() {
+      11 -        return "hello"
+      11 +        return "goodbye"
+      12      }
+ ...
+      50      func world() {
+      51 -        return "world"
+      51 +        return "planet"
+      52      }
+`
+
+	diffs := Parse(input)
+
+	if len(diffs) != 1 {
+		t.Fatalf("expected 1 diff, got %d", len(diffs))
+	}
+
+	d := diffs[0]
+	if len(d.Hunks) != 2 {
+		t.Fatalf("expected 2 hunks (separated by ...), got %d", len(d.Hunks))
+	}
+
+	// First hunk should start at line 10
+	if d.Hunks[0].StartLine != 10 {
+		t.Errorf("expected first hunk to start at line 10, got %d", d.Hunks[0].StartLine)
+	}
+
+	// Second hunk should start at line 50
+	if d.Hunks[1].StartLine != 50 {
+		t.Errorf("expected second hunk to start at line 50, got %d", d.Hunks[1].StartLine)
+	}
+}
+
+func TestParseWriteWithBreaks(t *testing.T) {
+	// Write format with " ..." breaks should create multiple hunks
+	input := `⏺ Write(/path/to/file.go)
+
+────────────────────────────────────────────────────────────────────────────────
+ Overwrite file file.go
+╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
+   1  package main
+   2
+   3  import (
+   4 +  "crypto/sha256"
+   5    "flag"
+   6  )
+ ...
+  61      os.Exit(1)
+  62    }
+  63
+  64 -  // Capture pane content
+  64 +  if *watchFlag {
+  65 +    return
+  66 +  }
+╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
+`
+
+	diffs := Parse(input)
+
+	if len(diffs) != 1 {
+		t.Fatalf("expected 1 diff, got %d", len(diffs))
+	}
+
+	d := diffs[0]
+	if len(d.Hunks) != 2 {
+		t.Fatalf("expected 2 hunks (separated by ...), got %d", len(d.Hunks))
+	}
+
+	// First hunk should start at line 1
+	if d.Hunks[0].StartLine != 1 {
+		t.Errorf("expected first hunk to start at line 1, got %d", d.Hunks[0].StartLine)
+	}
+
+	// Second hunk should start at line 61
+	if d.Hunks[1].StartLine != 61 {
+		t.Errorf("expected second hunk to start at line 61, got %d", d.Hunks[1].StartLine)
+	}
+}

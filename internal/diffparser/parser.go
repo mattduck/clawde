@@ -32,8 +32,8 @@ type FileDiff struct {
 }
 
 var (
-	// Matches: ⏺ Update(/path/to/file)
-	updatePattern = regexp.MustCompile(`^⏺ Update\((.+)\)`)
+	// Matches: ⏺ Update(/path/to/file) or ⏺ Write(/path/to/file)
+	updatePattern = regexp.MustCompile(`^⏺ (Update|Write)\((.+)\)`)
 	// Matches: summary line like "⎿  Added 2 lines, removed 3 lines"
 	summaryPattern = regexp.MustCompile(`^\s*⎿`)
 	// Matches: change line - LINENUM + single space + -/+ + content
@@ -42,8 +42,10 @@ var (
 	contextPattern = regexp.MustCompile(`^\s+(\d+)  (.*)$`)
 	// Matches: empty context line - just LINENUM
 	emptyLinePattern = regexp.MustCompile(`^\s+(\d+)\s*$`)
-	// Matches: end of diff markers
-	endPattern = regexp.MustCompile(`^∴|^⏺ [^U]`)
+	// Matches: hunk break marker (skipped lines)
+	breakPattern = regexp.MustCompile(`^\s*\.\.\.`)
+	// Matches: end of diff markers (other tool calls, thinking marker)
+	endPattern = regexp.MustCompile(`^∴|^⏺ [^UW]`)
 )
 
 // Parse extracts file diffs from Claude's terminal output
@@ -65,7 +67,7 @@ func Parse(content string) []FileDiff {
 				diffs = append(diffs, *currentDiff)
 			}
 
-			currentDiff = &FileDiff{Path: match[1]}
+			currentDiff = &FileDiff{Path: match[2]}
 			currentHunk = &Hunk{}
 			continue
 		}
@@ -89,6 +91,16 @@ func Parse(content string) []FileDiff {
 		}
 
 		if currentDiff == nil {
+			continue
+		}
+
+		// Check for hunk break (... indicating skipped lines)
+		if breakPattern.MatchString(line) {
+			// Save current hunk and start a new one
+			if currentHunk != nil && len(currentHunk.Lines) > 0 {
+				currentDiff.Hunks = append(currentDiff.Hunks, *currentHunk)
+				currentHunk = &Hunk{}
+			}
 			continue
 		}
 
