@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
@@ -31,8 +32,10 @@ func main() {
 	paneFlag := flag.String("pane", "", "Specific pane ID to capture from (default: first claude/clawde in current window)")
 	rawFlag := flag.Bool("raw", false, "Output raw captured content instead of parsed diff")
 	noPagerFlag := flag.Bool("no-pager", false, "Output to stdout instead of pager")
-	watchFlag := flag.Bool("watch", false, "Watch mode: continuously poll for new diffs")
-	intervalFlag := flag.Duration("interval", 3*time.Second, "Poll interval for watch mode")
+	watchFlag := flag.Bool("watch", false, "Watch mode: continuously monitor for new diffs")
+	debounceFlag := flag.Duration("debounce", 300*time.Millisecond, "Wait this long after activity before updating (watch mode)")
+	maxWaitFlag := flag.Duration("max-wait", 5*time.Second, "Maximum time between updates during continuous activity (watch mode)")
+	linesFlag := flag.Int("lines", 2000, "Number of scrollback lines to capture")
 	debugFlag := flag.Bool("debug", false, "Show debug output")
 	flag.Parse()
 
@@ -78,16 +81,16 @@ func main() {
 	}
 
 	if *watchFlag {
-		runWatchMode(targetPane, *intervalFlag, *noPagerFlag, *debugFlag)
+		runWatchMode(targetPane, *linesFlag, *debounceFlag, *maxWaitFlag, *noPagerFlag, *debugFlag)
 		return
 	}
 
 	// Single-shot mode
-	runOnce(targetPane, *rawFlag, *noPagerFlag)
+	runOnce(targetPane, *linesFlag, *rawFlag, *noPagerFlag)
 }
 
-func runOnce(targetPane string, rawMode, noPagerMode bool) {
-	content, err := tmux.CapturePane(targetPane, true)
+func runOnce(targetPane string, lines int, rawMode, noPagerMode bool) {
+	content, err := tmux.CapturePaneLines(targetPane, lines)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
@@ -126,12 +129,11 @@ func runOnce(targetPane string, rawMode, noPagerMode bool) {
 	}
 }
 
-func runWatchMode(targetPane string, interval time.Duration, noPagerMode, debug bool) {
+func runWatchMode(targetPane string, lines int, debounce, maxWait time.Duration, noPagerMode, debug bool) {
 	// Set up signal handling for clean exit
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 
-	var lastHash string
 	pager := detectPager()
 	if noPagerMode {
 		pager = ""
@@ -148,28 +150,110 @@ func runWatchMode(targetPane string, interval time.Duration, noPagerMode, debug 
 		}
 	}
 
-	if debug {
-		fmt.Fprintf(os.Stderr, "[debug] watch mode: pane=%s interval=%v pager=%q\n", targetPane, interval, pager)
+	// Create FIFO for activity detection
+	fifoDir := filepath.Join(os.TempDir(), "clawde-diff")
+	if err := os.MkdirAll(fifoDir, 0700); err != nil {
+		fmt.Fprintf(os.Stderr, "error: failed to create fifo directory: %v\n", err)
+		os.Exit(1)
 	}
+
+	// Clean pane ID for filename (replace : and . with -)
+	safePaneID := strings.ReplaceAll(strings.ReplaceAll(targetPane, ":", "-"), ".", "-")
+	fifoPath := filepath.Join(fifoDir, "activity-"+safePaneID+".fifo")
+
+	// Clean up stale FIFO from previous run
+	os.Remove(fifoPath)
+
+	// Create FIFO
+	if err := syscall.Mkfifo(fifoPath, 0600); err != nil {
+		fmt.Fprintf(os.Stderr, "error: failed to create fifo: %v\n", err)
+		os.Exit(1)
+	}
+
+	// Cleanup function
+	cleanup := func() {
+		if debug {
+			fmt.Fprintf(os.Stderr, "[debug] cleaning up\n")
+		}
+		tmux.StopPipePane(targetPane)
+		killCurrentPager()
+		os.Remove(fifoPath)
+		fmt.Print("\033[2J\033[H") // Clear screen
+	}
+
+	// Start pipe-pane
+	if err := tmux.StartPipePane(targetPane, "cat > "+fifoPath); err != nil {
+		fmt.Fprintf(os.Stderr, "error: failed to start pipe-pane: %v\n", err)
+		os.Remove(fifoPath)
+		os.Exit(1)
+	}
+
+	if debug {
+		fmt.Fprintf(os.Stderr, "[debug] watch mode: pane=%s debounce=%v maxWait=%v pager=%q\n", targetPane, debounce, maxWait, pager)
+		fmt.Fprintf(os.Stderr, "[debug] fifo: %s\n", fifoPath)
+	}
+
+	// Channel for activity signals from FIFO reader
+	activity := make(chan struct{}, 100)
+	fifoEOF := make(chan struct{})
+
+	// Goroutine to read from FIFO and signal activity
+	go func() {
+		// Open FIFO (this blocks until pipe-pane starts writing)
+		fifo, err := os.Open(fifoPath)
+		if err != nil {
+			if debug {
+				fmt.Fprintf(os.Stderr, "[debug] fifo open error: %v\n", err)
+			}
+			close(fifoEOF)
+			return
+		}
+		defer fifo.Close()
+
+		buf := make([]byte, 4096)
+		for {
+			n, err := fifo.Read(buf)
+			if n > 0 {
+				// Signal activity (non-blocking)
+				select {
+				case activity <- struct{}{}:
+				default:
+				}
+			}
+			if err != nil {
+				if debug {
+					fmt.Fprintf(os.Stderr, "[debug] fifo read error (pane closed?): %v\n", err)
+				}
+				close(fifoEOF)
+				return
+			}
+		}
+	}()
 
 	// Channel to know when pager exits
 	pagerDone := make(chan struct{}, 1)
 
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
+	var lastHash string
+	var debounceTimer *time.Timer
+	var maxWaitTimer *time.Timer
 
 	// Do initial check immediately
-	lastHash = checkAndUpdate(targetPane, lastHash, pager, pagerDone, debug)
+	lastHash = checkAndUpdate(targetPane, lines, lastHash, pager, pagerDone, debug)
 
 	for {
 		select {
 		case <-sigChan:
-			// Clean up and exit
 			if debug {
 				fmt.Fprintf(os.Stderr, "[debug] received signal, exiting\n")
 			}
-			killCurrentPager()
-			fmt.Print("\033[2J\033[H") // Clear screen
+			cleanup()
+			return
+
+		case <-fifoEOF:
+			if debug {
+				fmt.Fprintf(os.Stderr, "[debug] pane closed, exiting\n")
+			}
+			cleanup()
 			return
 
 		case <-pagerDone:
@@ -178,23 +262,54 @@ func runWatchMode(targetPane string, interval time.Duration, noPagerMode, debug 
 				if debug {
 					fmt.Fprintf(os.Stderr, "[debug] pager killed by us, continuing\n")
 				}
-				pagerKilledByUs = false // Reset for next time
+				pagerKilledByUs = false
 				continue
 			}
 			// User quit the pager, exit watch mode
 			if debug {
 				fmt.Fprintf(os.Stderr, "[debug] pager exited by user, exiting watch mode\n")
 			}
+			cleanup()
 			return
 
-		case <-ticker.C:
-			lastHash = checkAndUpdate(targetPane, lastHash, pager, pagerDone, debug)
+		case <-activity:
+			// Activity detected - reset debounce timer
+			if debounceTimer != nil {
+				debounceTimer.Stop()
+			}
+			debounceTimer = time.AfterFunc(debounce, func() {
+				// Debounce fired - do update
+				if debug {
+					fmt.Fprintf(os.Stderr, "[debug] debounce fired, checking for updates\n")
+				}
+				lastHash = checkAndUpdate(targetPane, lines, lastHash, pager, pagerDone, debug)
+				// Reset max wait timer
+				if maxWaitTimer != nil {
+					maxWaitTimer.Stop()
+					maxWaitTimer = nil
+				}
+			})
+
+			// Start max wait timer if not already running
+			if maxWaitTimer == nil {
+				maxWaitTimer = time.AfterFunc(maxWait, func() {
+					if debug {
+						fmt.Fprintf(os.Stderr, "[debug] max wait fired, forcing update\n")
+					}
+					// Stop debounce timer and do update
+					if debounceTimer != nil {
+						debounceTimer.Stop()
+					}
+					lastHash = checkAndUpdate(targetPane, lines, lastHash, pager, pagerDone, debug)
+					maxWaitTimer = nil
+				})
+			}
 		}
 	}
 }
 
-func checkAndUpdate(targetPane, lastHash, pager string, pagerDone chan struct{}, debug bool) string {
-	content, err := tmux.CapturePane(targetPane, true)
+func checkAndUpdate(targetPane string, lines int, lastHash, pager string, pagerDone chan struct{}, debug bool) string {
+	content, err := tmux.CapturePaneLines(targetPane, lines)
 	if err != nil {
 		if debug {
 			fmt.Fprintf(os.Stderr, "[debug] capture error: %v\n", err)

@@ -124,3 +124,32 @@ func SendKeys(paneID string, keys ...string) error {
 	}
 	return nil
 }
+
+// CapturePaneLines captures the last N lines from a pane's scrollback
+func CapturePaneLines(paneID string, lines int) (string, error) {
+	args := []string{"capture-pane", "-t", paneID, "-p", "-S", fmt.Sprintf("-%d", lines)}
+	cmd := exec.Command("tmux", args...)
+	output, err := cmd.Output()
+	if err != nil {
+		return "", fmt.Errorf("failed to capture pane %s: %w", paneID, err)
+	}
+	return string(output), nil
+}
+
+// StartPipePane starts streaming pane output to a shell command
+func StartPipePane(paneID, command string) error {
+	cmd := exec.Command("tmux", "pipe-pane", "-t", paneID, command)
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("failed to start pipe-pane for %s: %w", paneID, err)
+	}
+	return nil
+}
+
+// StopPipePane stops streaming pane output (by calling pipe-pane with no command)
+func StopPipePane(paneID string) error {
+	cmd := exec.Command("tmux", "pipe-pane", "-t", paneID)
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("failed to stop pipe-pane for %s: %w", paneID, err)
+	}
+	return nil
+}
