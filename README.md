@@ -41,8 +41,8 @@ work.
 
 The following environment variables can be used to configure clawde's behavior:
 
-- `CLAWDE_BETTER_DEFAULTS`: Sets some UX enhancements for the wrapped program, including `CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false` per https://github.com/anthropics/claude-code/issues/13878#issuecomment-3651710357 (default: true)
-- `CLAWDE_FORCE_ANSI`: The builtin "ansi" theme actually uses true colour, which looks bad in my terminal. This forces ANSI color support by setting COLORTERM=ansi and TERM=xterm for the wrapped program (default: false)
+- `CLAWDE_BETTER_DEFAULTS`: Sets some UX enhancements for the wrapped program, including `CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false` per https://github.com/anthropics/claude-code/issues/13878#issuecomment-3651710357  (default: true)
+- `CLAWDE_FORCE_ANSI`: The builtin themes (including "ansi") all use true colour, which looks bad in my terminal. This forces ANSI color support by setting COLORTERM=ansi and TERM=xterm for the wrapped program (default: true). We also set `CLAUDE_CODE_SYNTAX_HIGHLIGHT=off` per https://github.com/anthropics/claude-code/issues/14144#issuecomment-3672384998, because at some point they started forcing truecolour diffs regardless.
 - `CLAWDE_OUTPUT_THROTTLING`: Experiment to reduce terminal flicker, not sure it works. This just limits screen redraws to happen at a lower frame rate (default: true)
 - `CLAWDE_INPUT_THROTTLING`: A separate, faster rate for when you're typing. (default: true)
 - `CLAWDE_HELD_ENTER_DETECTION`: Feature I tried but didn't like: hold enter key to actually submit (default: false)
