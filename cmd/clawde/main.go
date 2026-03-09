@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"os/signal"
 	"strings"
 	"sync"
@@ -895,6 +896,36 @@ func handleUserInput(wrapper *CLIWrapper) {
 	}
 }
 
+// findClaudeBinary searches PATH for the claude binary, preferring native
+// binaries over shell script shims (e.g. the npm wrapper at ~/.claude/local/claude).
+func findClaudeBinary() (string, error) {
+	pathEnv := os.Getenv("PATH")
+	dirs := strings.Split(pathEnv, string(os.PathListSeparator))
+
+	for _, dir := range dirs {
+		candidate := filepath.Join(dir, "claude")
+		info, err := os.Stat(candidate)
+		if err != nil || info.IsDir() {
+			continue
+		}
+		// Skip shell script shims by reading the first two bytes
+		f, err := os.Open(candidate)
+		if err != nil {
+			continue
+		}
+		header := make([]byte, 2)
+		n, _ := f.Read(header)
+		f.Close()
+		if n == 2 && string(header) == "#!" {
+			logger.Debug("Skipping shell script shim", "path", candidate)
+			continue
+		}
+		logger.Info("Using claude binary", "path", candidate)
+		return candidate, nil
+	}
+	return "", fmt.Errorf("'claude' binary not found on PATH (shell script shims were skipped)")
+}
+
 func main() {
 	// Load configuration from environment variables
 	config := LoadConfig()
@@ -911,10 +942,10 @@ func main() {
 		defer logFile.Close()
 	}
 
-	// Always look for "claude" program on PATH
-	command, err := exec.LookPath("claude")
+	// Find the claude binary, preferring the native binary over npm shims
+	command, err := findClaudeBinary()
 	if err != nil {
-		fmt.Printf("Error: 'claude' program not found on PATH: %v\n", err)
+		fmt.Printf("Error: %v\n", err)
 		os.Exit(1)
 	}
 
