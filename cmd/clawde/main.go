@@ -805,14 +805,11 @@ func processUserInput(input []byte, n int, wrapper *CLIWrapper) []byte {
 					} else if enterDetector.consecutiveCount == 1 {
 						// First Enter in potential sequence: defer sending backslash+enter
 						enterDetector.SetPendingAction(func() {
-							// Send backslash+enter after delay
-							deferredOutput := []byte{'\\', 13}
-							select {
-							case deferredOutputChannel <- deferredOutput:
-							default:
-								// Channel full, send directly (shouldn't happen with large buffer)
-								wrapper.stdin.Write(deferredOutput)
-							}
+							// Send backslash first, then enter after a short delay
+							// Two separate writes so Claude Code treats them as distinct keystrokes
+							deferredOutputChannel <- []byte{'\\'}
+							time.Sleep(5 * time.Millisecond)
+							deferredOutputChannel <- []byte{13}
 						})
 						// Don't add anything to processedInput yet
 					} else {
@@ -820,9 +817,13 @@ func processUserInput(input []byte, n int, wrapper *CLIWrapper) []byte {
 						processedInput = append(processedInput, 13)
 					}
 				} else {
-					// Simple mode in INSERT: send backslash+enter for regular Enter
+					// Simple mode in INSERT: send backslash, then enter after a short delay
+					// Sending as two separate writes so Claude Code treats them as distinct keystrokes
 					processedInput = append(processedInput, '\\')
-					processedInput = append(processedInput, 13)
+					go func() {
+						time.Sleep(5 * time.Millisecond)
+						deferredOutputChannel <- []byte{13}
+					}()
 				}
 			} else {
 				// Not in INSERT mode: send normal Enter
@@ -973,19 +974,19 @@ func main() {
 
 	// Start periodic INSERT mode status logging for debugging
 	// go func() {
-	// 	ticker := time.NewTicker(5 * time.Second)
-	// 	defer ticker.Stop()
-	// 	for range ticker.C {
-	// 		insertMode := wrapper.isInInsertMode()
-	// 		wrapper.outputBuffer.insertMutex.RLock()
-	// 		lastNonEmptyLines := make([]string, len(wrapper.outputBuffer.lastNonEmptyLines))
-	// 		for i, line := range wrapper.outputBuffer.lastNonEmptyLines {
-	// 			lastNonEmptyLines[i] = string(line)
-	// 		}
-	// 		currentLine := string(wrapper.outputBuffer.currentLine)
-	// 		wrapper.outputBuffer.insertMutex.RUnlock()
-	// 		logger.Info("Periodic status check", "insert_mode", insertMode, "last_lines", lastNonEmptyLines, "current_line", currentLine)
-	// 	}
+	//     ticker := time.NewTicker(5 * time.Second)
+	//     defer ticker.Stop()
+	//     for range ticker.C {
+	//         insertMode := wrapper.isInInsertMode()
+	//         wrapper.outputBuffer.insertMutex.RLock()
+	//         lastNonEmptyLines := make([]string, len(wrapper.outputBuffer.lastNonEmptyLines))
+	//         for i, line := range wrapper.outputBuffer.lastNonEmptyLines {
+	//             lastNonEmptyLines[i] = string(line)
+	//         }
+	//         currentLine := string(wrapper.outputBuffer.currentLine)
+	//         wrapper.outputBuffer.insertMutex.RUnlock()
+	//         logger.Info("Periodic status check", "insert_mode", insertMode, "last_lines", lastNonEmptyLines, "current_line", currentLine)
+	//     }
 	// }()
 
 	// Handle external termination (SIGTERM, SIGHUP) gracefully
